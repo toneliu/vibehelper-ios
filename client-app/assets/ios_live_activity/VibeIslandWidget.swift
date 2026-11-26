@@ -209,29 +209,11 @@ struct AnimatedPixelPetView: View {
     }
   }
 
+  // Font+timer rendering was invisible inside the Live Activity process on
+  // sideloaded builds, so always draw the reliable Canvas sprite instead.
   var body: some View {
-    if status == "disconnected" {
-      PixelPetCanvas(petType: petType, status: status, frame: frame)
-        .frame(width: size, height: size)
-    } else {
-      let interval = animStart...animStart.addingTimeInterval(8 * 3600)
-      ZStack {
-        ForEach(0..<layerSpecs.count, id: \.self) { idx in
-          let layer = layerSpecs[idx]
-          Text(timerInterval: interval, countsDown: false)
-            .font(.custom(layer.0, size: size))
-            .foregroundColor(layer.1)
-            .environment(\.locale, Locale(identifier: "en_US_POSIX"))
-            .environment(\.layoutDirection, .leftToRight)
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .frame(width: size, height: size, alignment: .trailing)
-            .clipped()
-        }
-      }
+    PixelPetCanvas(petType: petType, status: status, frame: frame)
       .frame(width: size, height: size)
-      .clipped()
-    }
   }
 }
 
