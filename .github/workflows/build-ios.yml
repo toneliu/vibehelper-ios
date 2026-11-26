@@ -1,0 +1,100 @@
+name: Build VibeHelper iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-ios-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      - name: Install xcodeproj gem
+        run: |
+          gem install xcodeproj --no-document
+          ruby -e "require 'xcodeproj'; puts 'xcodeproj ' + Xcodeproj::VERSION"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build Unsigned iOS Release IPA
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          DART_DEFINES="$(python3 scripts/compute_update_manifest.py --print-dart-defines --build-id "$SHORT_SHA")"
+          echo "Using dart defines: $DART_DEFINES"
+
+          cd client-app
+          flutter create --platforms=ios --org com.example --project-name vibehelper_client .
+          flutter pub get
+          flutter build ios --config-only --release --no-codesign || true
+          python3 ../scripts/patch_ios.py
+          (cd ios && pod install --repo-update)
+
+          flutter analyze --no-fatal-infos
+          flutter test
+          flutter build ios --release --no-codesign $DART_DEFINES
+
+          APP_PATH="build/ios/iphoneos/Runner.app"
+          WIDGET_PATH="$APP_PATH/PlugIns/VibeIslandWidget.appex"
+          test -d "$APP_PATH"
+          test -d "$WIDGET_PATH"
+          FONT_COUNT="$(find "$WIDGET_PATH" -maxdepth 2 -name 'VibePet*.ttf' | wc -l | tr -d ' ')"
+          echo "Embedded VibeIslandWidget fonts: $FONT_COUNT"
+          test "$FONT_COUNT" -eq 9
+
+          rm -rf Payload ../release
+          mkdir -p Payload ../release
+          cp -R "$APP_PATH" Payload/
+          zip -qry ../release/vibehelper-client-ios.ipa Payload
+          cd ..
+          python3 scripts/compute_update_manifest.py \
+            --build-id "$SHORT_SHA" \
+            --publish-dir release \
+            --ios-ipa release/vibehelper-client-ios.ipa
+          ls -lh release/vibehelper-client-ios.ipa release/manifest.json
+
+      - name: Upload IPA Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vibehelper-client-ios-ipa
+          path: |
+            release/vibehelper-client-ios.ipa
+            release/manifest.json
+          retention-days: 30
+
+      - name: Publish IPA to ci-latest Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh release view ci-latest --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create ci-latest \
+              --repo "${{ github.repository }}" \
+              --title "CI Latest iOS Build" \
+              --notes "Automated unsigned iOS IPA build for AltStore / SideStore (includes VibeIslandWidget background pet animation)."
+          fi
+          gh release upload ci-latest \
+            release/vibehelper-client-ios.ipa \
+            release/manifest.json \
+            --repo "${{ github.repository }}" \
+            --clobber

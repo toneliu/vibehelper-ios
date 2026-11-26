@@ -1,0 +1,11 @@
+# Build / tooling outputs
+client-app/ios/
+client-app/android/
+client-app/build/
+client-app/.dart_tool/
+client-app/pubspec.lock
+release/
+Payload/
+__pycache__/
+*.py[cod]
+.DS_Store

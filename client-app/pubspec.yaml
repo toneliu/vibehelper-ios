@@ -1,0 +1,29 @@
+name: vibehelper_client
+description: Cross-platform Windows, Android & iOS remote voice input, dialog text reader, and low-latency window controller.
+publish_to: "none"
+version: 0.7.0+7
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  web_socket_channel: ^3.0.1
+  flutter_riverpod: ^2.6.1
+  speech_to_text: ^7.5.0
+  flutter_webrtc: ^1.6.3
+  record: ^6.2.1
+  file_picker: ^10.3.3
+  hotkey_manager: ^0.2.3
+  shared_preferences: ^2.3.2
+  uuid: ^4.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
