@@ -1,5 +1,6 @@
 import ActivityKit
 import SwiftUI
+import UIKit
 import WidgetKit
 
 @main
@@ -209,11 +210,40 @@ struct AnimatedPixelPetView: View {
     }
   }
 
-  // Font+timer rendering was invisible inside the Live Activity process on
-  // sideloaded builds, so always draw the reliable Canvas sprite instead.
+  /// True only if every pixel font is registered in the widget extension process.
+  private var fontsAvailable: Bool {
+    layerSpecs.allSatisfy { UIFont(name: $0.0, size: size) != nil }
+  }
+
   var body: some View {
-    PixelPetCanvas(petType: petType, status: status, frame: frame)
+    if status == "disconnected" || !fontsAvailable {
+      // Static fallback: never leave the island blank.
+      PixelPetCanvas(petType: petType, status: status, frame: frame)
+        .frame(width: size, height: size)
+    } else {
+      let interval = animStart...animStart.addingTimeInterval(8 * 3600)
+      ZStack {
+        ForEach(0..<layerSpecs.count, id: \.self) { idx in
+          let layer = layerSpecs[idx]
+          // Timer text expands to the full proposed width inside widgets and its
+          // glyphs are leading-aligned by default. Give it a wide box, force the
+          // digits to the trailing edge, then clip a size-wide window so only the
+          // last (seconds) digit == current animation frame stays visible.
+          Text(timerInterval: interval, countsDown: false)
+            .font(.custom(layer.0, size: size))
+            .foregroundColor(layer.1)
+            .environment(\.locale, Locale(identifier: "en_US_POSIX"))
+            .environment(\.layoutDirection, .leftToRight)
+            .multilineTextAlignment(.trailing)
+            .lineLimit(1)
+            .frame(width: size * 10, height: size, alignment: .trailing)
+            .frame(width: size, height: size, alignment: .trailing)
+            .clipped()
+        }
+      }
       .frame(width: size, height: size)
+      .clipped()
+    }
   }
 }
 
