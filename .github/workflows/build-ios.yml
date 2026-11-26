@@ -48,7 +48,11 @@ jobs:
           flutter pub get
           flutter build ios --config-only --release --no-codesign || true
           python3 ../scripts/patch_ios.py
-          (cd ios && pod install --repo-update)
+          if [ -f ios/Podfile ]; then
+            (cd ios && pod install --repo-update)
+          else
+            echo "Swift Package Manager active (no Podfile); skipping pod install."
+          fi
 
           flutter analyze --no-fatal-infos
           flutter test
