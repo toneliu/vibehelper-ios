@@ -24,6 +24,7 @@ import '../update/update_controller.dart';
 import '../windows/window_controller.dart';
 import '../windows/window_selector_panel.dart';
 import 'access_log_sheet.dart';
+import 'project_sheets.dart';
 
 /// LingGuang-inspired minimalist 5-tab Android Vibe Coding console.
 ///
@@ -93,6 +94,12 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
   bool _loadingApps = false;
   String? _busyIdeId;
 
+  // Project registry & grouping state
+  List<ProjectItem> _projects = const [];
+  String _defaultProjectRoot = '';
+  String? _selectedProjectFilterId;
+  bool _loadingProjects = false;
+
   @override
   void initState() {
     super.initState();
@@ -158,6 +165,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     if (!mounted) return;
     if (connected) {
       unawaited(_loadHostApps());
+      unawaited(_loadProjects());
       unawaited(ref.read(appUpdateProvider.notifier).syncOnConnected());
       final cs = ref.read(windowContentProvider);
       final contentCtrl = ref.read(windowContentProvider.notifier);
@@ -173,6 +181,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     unawaited(_probeAllHosts());
     if (ok) {
       unawaited(_loadHostApps());
+      unawaited(_loadProjects());
       unawaited(ref.read(appUpdateProvider.notifier).syncOnConnected());
       final cs = ref.read(windowContentProvider);
       if (!cs.isLoadingContent) {
@@ -1119,6 +1128,77 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     }
   }
 
+  Future<void> _loadProjects() async {
+    if (_loadingProjects) return;
+    _loadingProjects = true;
+    try {
+      final resp = await ref.read(hostActionProvider).fetchProjects();
+      if (!mounted) return;
+      if (resp != null) {
+        setState(() {
+          _projects = resp.projects;
+          if (resp.defaultRootDir.isNotEmpty) {
+            _defaultProjectRoot = resp.defaultRootDir;
+          }
+        });
+      }
+    } finally {
+      _loadingProjects = false;
+    }
+  }
+
+  Future<void> _openProjectIde(ProjectItem proj) async {
+    HapticFeedback.mediumImpact();
+    final (ok, msg) = await ref.read(hostActionProvider).openProjectInIde(
+          projectId: proj.id,
+          ideId: proj.defaultIde.isNotEmpty ? proj.defaultIde : 'antigravity',
+        );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
+    if (ok) {
+      unawaited(_loadHostApps());
+      Future<void>.delayed(const Duration(milliseconds: 900), () {
+        if (mounted) {
+          unawaited(ref.read(windowControllerProvider.notifier).refresh());
+        }
+      });
+    }
+  }
+
+  Future<void> _confirmDeleteProject(ProjectItem proj) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('移除项目记录'),
+        content: Text(
+          '确定从项目列表移除「${proj.name}」吗？\n\n宿主机本地目录（${proj.path}）中的文件不会被删除，仅清除归类记录。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final ok = await ref.read(hostActionProvider).deleteProject(proj.id);
+    if (!mounted) return;
+    if (ok) {
+      if (_selectedProjectFilterId == proj.id) {
+        setState(() => _selectedProjectFilterId = null);
+      }
+      unawaited(_loadProjects());
+      unawaited(ref.read(windowContentProvider.notifier).fetchContent());
+    }
+  }
+
   Future<void> _connectHost(HostProfile profile) async {
     HapticFeedback.lightImpact();
     await ref.read(settingsProvider.notifier).selectHostProfile(profile.id);
@@ -1131,6 +1211,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
           .read(windowContentProvider.notifier)
           .fetchContent(resetSession: true);
       unawaited(_loadHostApps());
+      unawaited(_loadProjects());
       unawaited(_probeAllHosts());
       unawaited(ref.read(appUpdateProvider.notifier).syncOnConnected());
     });
@@ -1660,6 +1741,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
         if (next == true) {
           final connectedAt = DateTime.now();
           unawaited(_loadHostApps());
+          unawaited(_loadProjects());
           Future<void>.delayed(const Duration(milliseconds: 450), () {
             if (!mounted) return;
             final cs = ref.read(windowContentProvider);
@@ -1755,6 +1837,9 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                         onTap: () {
                           HapticFeedback.selectionClick();
                           _scaffoldKey.currentState?.openDrawer();
+                          if (connected) {
+                            unawaited(_loadProjects());
+                          }
                         },
                         child: Container(
                           width: 42,
@@ -2064,8 +2149,422 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
   }
 
   // ---------------------------------------------------------------------------
-  // Left Drawer: Historical Agent Sessions & Model Switcher
+  // Left Drawer: Projects, Grouped Agent Sessions & Model Switcher
   // ---------------------------------------------------------------------------
+
+  Widget _buildDrawerFilterChip(
+    VibePalette p, {
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+    IconData? icon,
+    Color? iconColor,
+    int? count,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: selected ? p.accent.withValues(alpha: 0.16) : p.panel,
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: selected ? p.accent : p.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (icon != null) ...[
+                Icon(
+                  icon,
+                  size: 13,
+                  color: selected ? p.accent : (iconColor ?? p.muted),
+                ),
+                const SizedBox(width: 4),
+              ],
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 112),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                    color: selected ? p.accent : p.text,
+                  ),
+                ),
+              ),
+              if (count != null) ...[
+                const SizedBox(width: 4),
+                Text(
+                  '$count',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: selected ? p.accent : p.muted,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDrawerProjectHeader(
+    VibePalette p, {
+    required ProjectItem? project,
+    required String title,
+    required int count,
+    required bool connected,
+  }) {
+    final canOpenIde = connected && project != null && project.path.isNotEmpty;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 8, 2, 4),
+      child: Row(
+        children: [
+          Icon(
+            project != null
+                ? Icons.folder_rounded
+                : Icons.folder_off_outlined,
+            size: 14,
+            color: project != null ? const Color(0xFFF59E0B) : p.muted,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '$title ($count)',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: p.muted,
+              ),
+            ),
+          ),
+          if (canOpenIde)
+            InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () => unawaited(_openProjectIde(project)),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.open_in_new_rounded, size: 12, color: p.accent),
+                    const SizedBox(width: 3),
+                    Text(
+                      'IDE',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: p.accent,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDrawerSessionTile(
+    VibePalette p,
+    AgentSessionItem s,
+    bool selected,
+    List<ProjectItem> mergedProjects,
+    bool connected,
+  ) {
+    Future<void> openAssign() async {
+      await showAssignProjectSheet(
+        context,
+        ref,
+        session: s,
+        projects: mergedProjects,
+        defaultRootDir: _defaultProjectRoot,
+        onAssigned: () => unawaited(_loadProjects()),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.of(context).pop();
+          ref
+              .read(windowContentProvider.notifier)
+              .selectSession(s.id, title: s.title);
+        },
+        onLongPress: connected ? () => unawaited(openAssign()) : null,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+          decoration: BoxDecoration(
+            color: selected ? p.accent.withValues(alpha: 0.13) : p.panel,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: selected ? p.accent : p.border),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: p.accent.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  s.agent.toUpperCase(),
+                  style: TextStyle(
+                    fontSize: 9.5,
+                    fontWeight: FontWeight.w700,
+                    color: p.accent,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      s.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight:
+                            selected ? FontWeight.w700 : FontWeight.w500,
+                        color: p.text,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '${s.turnCount} 条消息${s.updatedAt.isNotEmpty ? ' · ${s.updatedAt}' : ''}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 10.5, color: p.muted),
+                    ),
+                  ],
+                ),
+              ),
+              if (connected)
+                IconButton(
+                  tooltip: '归类到项目',
+                  onPressed: () => unawaited(openAssign()),
+                  icon: Icon(
+                    Icons.drive_file_move_outlined,
+                    size: 16,
+                    color: p.muted,
+                  ),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
+                ),
+              if (selected)
+                Icon(Icons.check_circle_rounded, size: 16, color: p.accent),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<Widget> _buildGroupedDrawerItems(
+    VibePalette p, {
+    required List<AgentSessionItem> sessions,
+    required List<ProjectItem> mergedProjects,
+    required String? activeId,
+    required bool connected,
+    required String? effectiveFilterId,
+  }) {
+    final projectById = {for (final proj in mergedProjects) proj.id: proj};
+    if (effectiveFilterId == null) {
+      final grouped = <String, List<AgentSessionItem>>{};
+      final groupOrder = <String>[];
+      for (final s in sessions) {
+        final key = s.projectId.isNotEmpty ? s.projectId : '__unassigned__';
+        if (!grouped.containsKey(key)) {
+          grouped[key] = <AgentSessionItem>[];
+          if (key != '__unassigned__') {
+            groupOrder.add(key);
+          }
+        }
+        grouped[key]!.add(s);
+      }
+      if (grouped.containsKey('__unassigned__')) {
+        groupOrder.add('__unassigned__');
+      }
+
+      final widgets = <Widget>[];
+      for (final gid in groupOrder) {
+        final items = grouped[gid]!;
+        final proj = gid == '__unassigned__' ? null : projectById[gid];
+        final title = gid == '__unassigned__'
+            ? '未归类对话'
+            : (proj?.name ??
+                (items.first.projectName.isNotEmpty
+                    ? items.first.projectName
+                    : gid));
+        widgets.add(
+          _buildDrawerProjectHeader(
+            p,
+            project: proj,
+            title: title,
+            count: items.length,
+            connected: connected,
+          ),
+        );
+        for (final s in items) {
+          widgets.add(
+            _buildDrawerSessionTile(
+              p,
+              s,
+              s.id == activeId,
+              mergedProjects,
+              connected,
+            ),
+          );
+        }
+      }
+
+      final emptyProjects = mergedProjects
+          .where((proj) => !grouped.containsKey(proj.id))
+          .toList();
+      if (emptyProjects.isNotEmpty) {
+        widgets.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(2, 10, 2, 4),
+            child: Text(
+              '其他项目 (${emptyProjects.length})',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: p.muted,
+              ),
+            ),
+          ),
+        );
+        for (final proj in emptyProjects) {
+          widgets.add(
+            Padding(
+              padding: const EdgeInsets.only(bottom: 7),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  setState(() => _selectedProjectFilterId = proj.id);
+                },
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: p.panel,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: p.border),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.folder_rounded,
+                          size: 17, color: Color(0xFFF59E0B)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              proj.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                                color: p.text,
+                              ),
+                            ),
+                            Text(
+                              '暂无关联对话 · 点击查看或右上打开 IDE',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 10.5, color: p.muted),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (connected && proj.path.isNotEmpty)
+                        IconButton(
+                          tooltip: '在 IDE 打开',
+                          onPressed: () => unawaited(_openProjectIde(proj)),
+                          icon: Icon(Icons.open_in_new_rounded,
+                              size: 15, color: p.accent),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 28, minHeight: 28),
+                        ),
+                      if (proj.isCustom && connected)
+                        IconButton(
+                          tooltip: '移除项目记录',
+                          onPressed: () =>
+                              unawaited(_confirmDeleteProject(proj)),
+                          icon: Icon(Icons.delete_outline_rounded,
+                              size: 15, color: p.muted),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 28, minHeight: 28),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+      }
+      return widgets;
+    }
+
+    final filtered = sessions.where((s) {
+      if (effectiveFilterId == '__unassigned__') return s.projectId.isEmpty;
+      return s.projectId == effectiveFilterId;
+    }).toList();
+
+    if (filtered.isEmpty) {
+      return [
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 8),
+          child: Text(
+            connected
+                ? '当前项目暂无历史对话\n可在上方「新建会话」或「IDE 打开」开始工作'
+                : '暂无匹配的历史对话',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 12.5, color: p.muted, height: 1.6),
+          ),
+        ),
+      ];
+    }
+
+    return [
+      for (final s in filtered)
+        _buildDrawerSessionTile(
+          p,
+          s,
+          s.id == activeId,
+          mergedProjects,
+          connected,
+        ),
+    ];
+  }
 
   Widget _buildSessionDrawer(
     VibePalette p,
@@ -2077,6 +2576,30 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     final sessions = content?.sessions ?? const <AgentSessionItem>[];
     final activeId = content?.activeSessionId;
     final blocks = content?.dialogBlocks ?? const <DialogBlockItem>[];
+
+    final mergedProjects = mergeProjectsWithSessions(_projects, sessions);
+    final sessionCounts = <String, int>{};
+    int unassignedCount = 0;
+    for (final s in sessions) {
+      if (s.projectId.isNotEmpty) {
+        sessionCounts[s.projectId] = (sessionCounts[s.projectId] ?? 0) + 1;
+      } else {
+        unassignedCount++;
+      }
+    }
+    String? effectiveFilterId = _selectedProjectFilterId;
+    if (effectiveFilterId != null &&
+        effectiveFilterId != '__unassigned__' &&
+        !mergedProjects.any((proj) => proj.id == effectiveFilterId)) {
+      effectiveFilterId = null;
+    }
+    if (effectiveFilterId == '__unassigned__' && unassignedCount == 0) {
+      effectiveFilterId = null;
+    }
+    final activeProjFilter = effectiveFilterId != null &&
+            effectiveFilterId != '__unassigned__'
+        ? mergedProjects.where((proj) => proj.id == effectiveFilterId).firstOrNull
+        : null;
 
     String activeModel = content?.activeModel ?? '';
     if (activeModel.isEmpty) {
@@ -2116,7 +2639,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Agent 会话与历史',
+                          '项目与对话历史',
                           style: TextStyle(
                             fontSize: 15.5,
                             fontWeight: FontWeight.w700,
@@ -2124,17 +2647,21 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                           ),
                         ),
                         Text(
-                          '点击即可同步切换宿主机窗口',
+                          '按项目归类 · 点击同步宿主机窗口',
                           style: TextStyle(fontSize: 11, color: p.muted),
                         ),
                       ],
                     ),
                   ),
                   IconButton(
-                    tooltip: '刷新会话',
+                    tooltip: '刷新项目与会话',
                     onPressed: connected
-                        ? () => unawaited(
-                            ref.read(windowContentProvider.notifier).fetchContent())
+                        ? () {
+                            unawaited(ref
+                                .read(windowContentProvider.notifier)
+                                .fetchContent());
+                            unawaited(_loadProjects());
+                          }
                         : null,
                     icon: Icon(Icons.refresh_rounded, size: 19, color: p.muted),
                   ),
@@ -2143,87 +2670,265 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
               const SizedBox(height: 12),
               Row(
                 children: [
-                  FilledButton.icon(
-                    onPressed: connected
-                        ? () {
-                            Navigator.of(context).pop();
-                            HapticFeedback.lightImpact();
-                            setState(() => _localQueuedMessages.clear());
-                            ref
-                                .read(windowContentProvider.notifier)
-                                .startNewSession();
-                          }
-                        : null,
-                    icon: const Icon(Icons.add_comment_outlined, size: 16),
-                    label: const Text(
-                      '新建会话',
-                      maxLines: 1,
-                      softWrap: false,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: connected
+                          ? () {
+                              Navigator.of(context).pop();
+                              HapticFeedback.lightImpact();
+                              setState(() => _localQueuedMessages.clear());
+                              ref
+                                  .read(windowContentProvider.notifier)
+                                  .startNewSession();
+                            }
+                          : null,
+                      icon: const Icon(Icons.add_comment_outlined, size: 15),
+                      label: const Text(
+                        '新建会话',
+                        maxLines: 1,
+                        softWrap: false,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: p.accent,
-                      foregroundColor: Colors.white,
-                      minimumSize: const Size(0, 40),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 10),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: p.accent,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(0, 38),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                       ),
                     ),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
-                    child: OutlinedButton(
+                    child: FilledButton.tonalIcon(
                       onPressed: connected
-                          ? () {
-                              Navigator.of(context).pop();
-                              openModelPickerSheet(
-                                context,
-                                ref,
-                                activeModel,
-                                content?.availableModels ?? const <String>[],
-                                winState.selectedWindowId,
-                              );
-                            }
+                          ? () => unawaited(
+                                showCreateProjectSheet(
+                                  context,
+                                  ref,
+                                  defaultRootDir: _defaultProjectRoot,
+                                  onCreated: () => unawaited(_loadProjects()),
+                                ),
+                              )
                           : null,
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(0, 40),
+                      icon: const Icon(Icons.create_new_folder_outlined,
+                          size: 15),
+                      label: const Text(
+                        '新建项目',
+                        maxLines: 1,
+                        softWrap: false,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 38),
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 11, vertical: 10),
-                        side: BorderSide(color: p.border),
+                            horizontal: 10, vertical: 8),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
                         ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.max,
-                        children: [
-                          Icon(Icons.auto_awesome_rounded,
-                              size: 15, color: p.accent),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              activeModel.isNotEmpty ? activeModel : '选择模型',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(fontSize: 12, color: p.text),
-                            ),
-                          ),
-                        ],
                       ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 12),
-              Divider(height: 1, color: p.border),
+              const SizedBox(height: 8),
+              OutlinedButton(
+                onPressed: connected
+                    ? () {
+                        Navigator.of(context).pop();
+                        openModelPickerSheet(
+                          context,
+                          ref,
+                          activeModel,
+                          content?.availableModels ?? const <String>[],
+                          winState.selectedWindowId,
+                        );
+                      }
+                    : null,
+                style: OutlinedButton.styleFrom(
+                  minimumSize: const Size(0, 36),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  side: BorderSide(color: p.border),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.auto_awesome_rounded,
+                        size: 15, color: p.accent),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        activeModel.isNotEmpty
+                            ? '当前模型：$activeModel'
+                            : '选择模型',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, color: p.text),
+                      ),
+                    ),
+                    Icon(Icons.expand_more_rounded, size: 16, color: p.muted),
+                  ],
+                ),
+              ),
+              if (mergedProjects.isNotEmpty || unassignedCount > 0) ...[
+                const SizedBox(height: 10),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      _buildDrawerFilterChip(
+                        p,
+                        label: '全部',
+                        count: sessions.length,
+                        selected: effectiveFilterId == null,
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          setState(() => _selectedProjectFilterId = null);
+                        },
+                      ),
+                      for (final proj in mergedProjects)
+                        _buildDrawerFilterChip(
+                          p,
+                          label: proj.name,
+                          icon: Icons.folder_rounded,
+                          iconColor: const Color(0xFFF59E0B),
+                          count: sessionCounts[proj.id] ?? proj.sessionCount,
+                          selected: effectiveFilterId == proj.id,
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            setState(
+                                () => _selectedProjectFilterId = proj.id);
+                          },
+                        ),
+                      if (unassignedCount > 0)
+                        _buildDrawerFilterChip(
+                          p,
+                          label: '未归类',
+                          icon: Icons.folder_off_outlined,
+                          count: unassignedCount,
+                          selected: effectiveFilterId == '__unassigned__',
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            setState(() =>
+                                _selectedProjectFilterId = '__unassigned__');
+                          },
+                        ),
+                    ],
+                  ),
+                ),
+              ],
+              if (activeProjFilter != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: p.panelAlt,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: p.border),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    activeProjFilter.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: p.text,
+                                    ),
+                                  ),
+                                ),
+                                if (activeProjFilter.isGit) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 5, vertical: 1),
+                                    decoration: BoxDecoration(
+                                      color:
+                                          p.success.withValues(alpha: 0.14),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      'Git',
+                                      style: TextStyle(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: p.success,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            if (activeProjFilter.path.isNotEmpty)
+                              Text(
+                                activeProjFilter.path,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontFamily: 'monospace',
+                                  color: p.muted,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      if (connected && activeProjFilter.path.isNotEmpty)
+                        TextButton.icon(
+                          onPressed: () =>
+                              unawaited(_openProjectIde(activeProjFilter)),
+                          icon: const Icon(Icons.open_in_new_rounded, size: 13),
+                          label: const Text('IDE 打开',
+                              style: TextStyle(fontSize: 11)),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            minimumSize: const Size(0, 28),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      if (activeProjFilter.isCustom && connected)
+                        IconButton(
+                          tooltip: '移除项目记录',
+                          onPressed: () => unawaited(
+                              _confirmDeleteProject(activeProjFilter)),
+                          icon: Icon(Icons.delete_outline_rounded,
+                              size: 16, color: p.muted),
+                          visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                              minWidth: 26, minHeight: 26),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
+              Divider(height: 1, color: p.border),
+              const SizedBox(height: 8),
               Expanded(
-                child: sessions.isEmpty
+                child: (sessions.isEmpty && mergedProjects.isEmpty)
                     ? Center(
                         child: Text(
                           connected
@@ -2234,87 +2939,15 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                               fontSize: 12.5, color: p.muted, height: 1.6),
                         ),
                       )
-                    : ListView.separated(
-                        itemCount: sessions.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 7),
-                        itemBuilder: (_, idx) {
-                          final s = sessions[idx];
-                          final selected = s.id == activeId;
-                          return InkWell(
-                            borderRadius: BorderRadius.circular(12),
-                            onTap: () {
-                              Navigator.of(context).pop();
-                              ref
-                                  .read(windowContentProvider.notifier)
-                                  .selectSession(s.id, title: s.title);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 11, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: selected
-                                    ? p.accent.withValues(alpha: 0.13)
-                                    : p.panel,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: selected ? p.accent : p.border,
-                                ),
-                              ),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 6, vertical: 2),
-                                    decoration: BoxDecoration(
-                                      color: p.accent.withValues(alpha: 0.14),
-                                      borderRadius: BorderRadius.circular(6),
-                                    ),
-                                    child: Text(
-                                      s.agent.toUpperCase(),
-                                      style: TextStyle(
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.w700,
-                                        color: p.accent,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          s.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            fontSize: 13,
-                                            fontWeight: selected
-                                                ? FontWeight.w700
-                                                : FontWeight.w500,
-                                            color: p.text,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          '${s.turnCount} 条消息${s.updatedAt.isNotEmpty ? ' · ${s.updatedAt}' : ''}',
-                                          style: TextStyle(
-                                            fontSize: 10.5,
-                                            color: p.muted,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  if (selected)
-                                    Icon(Icons.check_circle_rounded,
-                                        size: 16, color: p.accent),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
+                    : ListView(
+                        children: _buildGroupedDrawerItems(
+                          p,
+                          sessions: sessions,
+                          mergedProjects: mergedProjects,
+                          activeId: activeId,
+                          connected: connected,
+                          effectiveFilterId: effectiveFilterId,
+                        ),
                       ),
               ),
             ],
@@ -2435,9 +3068,43 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(Icons.chat_bubble_outline_rounded,
-                                size: 13, color: p.accent),
-                            const SizedBox(width: 5),
+                            if (activeSession.projectName.isNotEmpty) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: p.accent.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.folder_rounded,
+                                        size: 11, color: p.accent),
+                                    const SizedBox(width: 3),
+                                    ConstrainedBox(
+                                      constraints:
+                                          const BoxConstraints(maxWidth: 74),
+                                      child: Text(
+                                        activeSession.projectName,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w700,
+                                          color: p.accent,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 5),
+                            ] else ...[
+                              Icon(Icons.chat_bubble_outline_rounded,
+                                  size: 13, color: p.accent),
+                              const SizedBox(width: 5),
+                            ],
                             Expanded(
                               child: Text(
                                 activeSession.title,
@@ -2753,7 +3420,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                 iconColor: i == 0 ? p.accent : const Color(0xFF0EA5E9),
                 title: sessions[i].title,
                 subtitle:
-                    '${sessions[i].agent.toUpperCase()} · ${sessions[i].turnCount} 条对话 · 点击恢复上下文',
+                    '${sessions[i].projectName.isNotEmpty ? '[${sessions[i].projectName}] · ' : ''}${sessions[i].agent.toUpperCase()} · ${sessions[i].turnCount} 条对话 · 点击恢复上下文',
                 highlight: i == 0,
                 onTap: () => contentCtrl.selectSession(
                   sessions[i].id,

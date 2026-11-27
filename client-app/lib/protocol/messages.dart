@@ -1049,6 +1049,9 @@ class AgentSessionItem {
     required this.title,
     this.updatedAt = '',
     this.turnCount = 0,
+    this.projectId = '',
+    this.projectName = '',
+    this.projectPath = '',
   });
 
   final String id;
@@ -1056,6 +1059,9 @@ class AgentSessionItem {
   final String title;
   final String updatedAt;
   final int turnCount;
+  final String projectId;
+  final String projectName;
+  final String projectPath;
 
   factory AgentSessionItem.fromJson(Map<String, dynamic> json) =>
       AgentSessionItem(
@@ -1064,6 +1070,9 @@ class AgentSessionItem {
         title: (json['title'] as String?) ?? '',
         updatedAt: (json['updated_at'] as String?) ?? '',
         turnCount: (json['turn_count'] as num?)?.toInt() ?? 0,
+        projectId: (json['project_id'] as String?) ?? '',
+        projectName: (json['project_name'] as String?) ?? '',
+        projectPath: (json['project_path'] as String?) ?? '',
       );
 
   Map<String, dynamic> toJson() => {
@@ -1072,6 +1081,65 @@ class AgentSessionItem {
         'title': title,
         'updated_at': updatedAt,
         'turn_count': turnCount,
+        if (projectId.isNotEmpty) 'project_id': projectId,
+        if (projectName.isNotEmpty) 'project_name': projectName,
+        if (projectPath.isNotEmpty) 'project_path': projectPath,
+      };
+}
+
+class ProjectItem {
+  const ProjectItem({
+    required this.id,
+    required this.name,
+    this.path = '',
+    this.description = '',
+    this.createdAt = '',
+    this.defaultIde = 'antigravity',
+    this.exists = true,
+    this.isGit = false,
+    this.isCustom = false,
+    this.sessionCount = 0,
+    this.lastActiveAt = '',
+  });
+
+  final String id;
+  final String name;
+  final String path;
+  final String description;
+  final String createdAt;
+  final String defaultIde;
+  final bool exists;
+  final bool isGit;
+  final bool isCustom;
+  final int sessionCount;
+  final String lastActiveAt;
+
+  factory ProjectItem.fromJson(Map<String, dynamic> json) => ProjectItem(
+        id: (json['id'] as String?) ?? '',
+        name: (json['name'] as String?) ?? '',
+        path: (json['path'] as String?) ?? '',
+        description: (json['description'] as String?) ?? '',
+        createdAt: (json['created_at'] as String?) ?? '',
+        defaultIde: (json['default_ide'] as String?) ?? 'antigravity',
+        exists: json['exists'] != false,
+        isGit: json['is_git'] == true,
+        isCustom: json['is_custom'] == true,
+        sessionCount: (json['session_count'] as num?)?.toInt() ?? 0,
+        lastActiveAt: (json['last_active_at'] as String?) ?? '',
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'path': path,
+        'description': description,
+        'created_at': createdAt,
+        'default_ide': defaultIde,
+        'exists': exists,
+        'is_git': isGit,
+        'is_custom': isCustom,
+        'session_count': sessionCount,
+        'last_active_at': lastActiveAt,
       };
 }
 

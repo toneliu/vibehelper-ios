@@ -9,6 +9,7 @@ import '../../core/app_settings.dart';
 import '../../core/theme.dart';
 import '../../protocol/messages.dart';
 import '../connection/connection_controller.dart';
+import '../mobile/project_sheets.dart';
 import '../windows/window_controller.dart';
 import 'media_attachments.dart';
 import 'window_content_controller.dart';
@@ -45,6 +46,11 @@ void openSessionPickerSheet(
 ) {
   final ctrl = ref.read(windowContentProvider.notifier);
   final p = VibeTheme.paletteOf(context);
+  String? selectedProjectId;
+  List<ProjectItem> fetchedProjects = const [];
+  String defaultRootDir = '';
+  bool loadedProjectsOnce = false;
+
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -52,136 +58,290 @@ void openSessionPickerSheet(
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
     ),
-    builder: (ctx) => SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.forum_rounded, size: 20, color: p.accent),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '切换 Agent 会话 (同步宿主机)',
-                    style: TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w700,
-                      color: p.text,
-                    ),
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setSheetState) {
+        if (!loadedProjectsOnce) {
+          loadedProjectsOnce = true;
+          unawaited(
+            ref.read(hostActionProvider).fetchProjects().then((resp) {
+              if (!ctx.mounted || resp == null) return;
+              setSheetState(() {
+                fetchedProjects = resp.projects;
+                defaultRootDir = resp.defaultRootDir;
+              });
+            }),
+          );
+        }
+
+        final mergedProjects =
+            mergeProjectsWithSessions(fetchedProjects, sessions);
+        final unassignedCount =
+            sessions.where((s) => s.projectId.isEmpty).length;
+        final filtered = sessions.where((s) {
+          if (selectedProjectId == null) return true;
+          if (selectedProjectId == '__unassigned__') return s.projectId.isEmpty;
+          return s.projectId == selectedProjectId;
+        }).toList();
+
+        Widget filterChip(String label, String? targetId) {
+          final active = selectedProjectId == targetId;
+          return Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(999),
+              onTap: () => setSheetState(() => selectedProjectId = targetId),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: active ? p.accent.withValues(alpha: 0.16) : p.panel,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: active ? p.accent : p.border),
+                ),
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                    color: active ? p.accent : p.text,
                   ),
                 ),
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                    ctrl.selectSession(null);
-                  },
-                  icon: const Icon(Icons.auto_awesome_rounded, size: 15),
-                  label: const Text('自动最新', style: TextStyle(fontSize: 12)),
+              ),
+            ),
+          );
+        }
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.forum_rounded, size: 20, color: p.accent),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '切换 Agent 会话 (同步宿主机)',
+                        style: TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w700,
+                          color: p.text,
+                        ),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        ctrl.selectSession(null);
+                      },
+                      icon: const Icon(Icons.auto_awesome_rounded, size: 15),
+                      label: const Text('自动最新', style: TextStyle(fontSize: 12)),
+                    ),
+                  ],
+                ),
+                if (mergedProjects.length >= 2 ||
+                    (mergedProjects.isNotEmpty && unassignedCount > 0)) ...[
+                  const SizedBox(height: 6),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        filterChip('全部', null),
+                        for (final proj in mergedProjects)
+                          filterChip('📁 ${proj.name}', proj.id),
+                        if (unassignedCount > 0)
+                          filterChip('未归类', '__unassigned__'),
+                      ],
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: MediaQuery.of(ctx).size.height * 0.58,
+                  ),
+                  child: filtered.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 28),
+                          child: Center(
+                            child: Text(
+                              sessions.isEmpty
+                                  ? '暂无历史会话，请先连接 Host 并选择 AI IDE 窗口'
+                                  : '当前项目下暂无历史会话',
+                              style: TextStyle(color: p.muted, fontSize: 13),
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: filtered.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 8),
+                          itemBuilder: (_, idx) {
+                            final s = filtered[idx];
+                            final selected = s.id == activeId;
+                            return InkWell(
+                              borderRadius: BorderRadius.circular(13),
+                              onTap: () {
+                                Navigator.of(ctx).pop();
+                                ctrl.selectSession(s.id, title: s.title);
+                              },
+                              onLongPress: () => unawaited(
+                                showAssignProjectSheet(
+                                  ctx,
+                                  ref,
+                                  session: s,
+                                  projects: mergedProjects,
+                                  defaultRootDir: defaultRootDir,
+                                ).then((changed) {
+                                  if (changed && ctx.mounted) {
+                                    Navigator.of(ctx).pop();
+                                  }
+                                }),
+                              ),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 11),
+                                decoration: BoxDecoration(
+                                  color: selected
+                                      ? p.accent.withValues(alpha: 0.14)
+                                      : p.panel,
+                                  borderRadius: BorderRadius.circular(13),
+                                  border: Border.all(
+                                    color: selected ? p.accent : p.border,
+                                    width: selected ? 1.4 : 1.0,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 7, vertical: 2.5),
+                                      decoration: BoxDecoration(
+                                        color: p.accent.withValues(alpha: 0.16),
+                                        borderRadius: BorderRadius.circular(6),
+                                      ),
+                                      child: Text(
+                                        _agentDisplayName(s.agent),
+                                        style: TextStyle(
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w700,
+                                          color: p.accent,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 9),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            s.title,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontSize: 13.5,
+                                              fontWeight: FontWeight.w600,
+                                              color: p.text,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Row(
+                                            children: [
+                                              if (s.projectName.isNotEmpty) ...[
+                                                Container(
+                                                  padding: const EdgeInsets
+                                                      .symmetric(
+                                                      horizontal: 5,
+                                                      vertical: 1),
+                                                  margin: const EdgeInsets.only(
+                                                      right: 6),
+                                                  decoration: BoxDecoration(
+                                                    color: const Color(0xFFF59E0B)
+                                                        .withValues(alpha: 0.14),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            5),
+                                                  ),
+                                                  child: Text(
+                                                    '📁 ${s.projectName}',
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: TextStyle(
+                                                      fontSize: 9.5,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      color: p.isDark
+                                                          ? const Color(
+                                                              0xFFFBBF24)
+                                                          : const Color(
+                                                              0xFFB45309),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                              Expanded(
+                                                child: Text(
+                                                  '${s.turnCount} 条消息${s.updatedAt.isNotEmpty ? ' · ${s.updatedAt}' : ''}',
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: TextStyle(
+                                                    fontSize: 11,
+                                                    color: p.muted,
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: '归类到项目',
+                                      onPressed: () => unawaited(
+                                        showAssignProjectSheet(
+                                          ctx,
+                                          ref,
+                                          session: s,
+                                          projects: mergedProjects,
+                                          defaultRootDir: defaultRootDir,
+                                        ).then((changed) {
+                                          if (changed && ctx.mounted) {
+                                            Navigator.of(ctx).pop();
+                                          }
+                                        }),
+                                      ),
+                                      icon: Icon(
+                                        Icons.drive_file_move_outlined,
+                                        size: 16,
+                                        color: p.muted,
+                                      ),
+                                      visualDensity: VisualDensity.compact,
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(
+                                          minWidth: 28, minHeight: 28),
+                                    ),
+                                    if (selected)
+                                      Icon(Icons.check_circle_rounded,
+                                          size: 18, color: p.accent),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.of(ctx).size.height * 0.58,
-              ),
-              child: sessions.isEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 28),
-                      child: Center(
-                        child: Text(
-                          '暂无历史会话，请先连接 Host 并选择 AI IDE 窗口',
-                          style: TextStyle(color: p.muted, fontSize: 13),
-                        ),
-                      ),
-                    )
-                  : ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: sessions.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (_, idx) {
-                        final s = sessions[idx];
-                        final selected = s.id == activeId;
-                        return InkWell(
-                          borderRadius: BorderRadius.circular(13),
-                          onTap: () {
-                            Navigator.of(ctx).pop();
-                            ctrl.selectSession(s.id, title: s.title);
-                          },
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 11),
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? p.accent.withValues(alpha: 0.14)
-                                  : p.panel,
-                              borderRadius: BorderRadius.circular(13),
-                              border: Border.all(
-                                color: selected ? p.accent : p.border,
-                                width: selected ? 1.4 : 1.0,
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 7, vertical: 2.5),
-                                  decoration: BoxDecoration(
-                                    color: p.accent.withValues(alpha: 0.16),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: Text(
-                                    _agentDisplayName(s.agent),
-                                    style: TextStyle(
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.w700,
-                                      color: p.accent,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(width: 9),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        s.title,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          fontSize: 13.5,
-                                          fontWeight: FontWeight.w600,
-                                          color: p.text,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 2),
-                                      Text(
-                                        '${s.turnCount} 条消息${s.updatedAt.isNotEmpty ? ' · ${s.updatedAt}' : ''}',
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          color: p.muted,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                if (selected)
-                                  Icon(Icons.check_circle_rounded,
-                                      size: 18, color: p.accent),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     ),
   );
 }

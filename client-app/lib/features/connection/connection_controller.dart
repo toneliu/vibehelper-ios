@@ -30,6 +30,16 @@ class UploadFileResult {
   final String? message;
 }
 
+class ProjectListResponse {
+  const ProjectListResponse({
+    this.projects = const [],
+    this.defaultRootDir = '',
+  });
+
+  final List<ProjectItem> projects;
+  final String defaultRootDir;
+}
+
 class HostHealthProbe {
   const HostHealthProbe({
     required this.profileId,
@@ -749,6 +759,7 @@ class HostActionController {
   Future<(bool ok, String message)> launchHostIde(
     String ideId, {
     bool restart = false,
+    String? workspacePath,
   }) async {
     final settings = _ref.read(settingsProvider);
     final query = <String, String>{
@@ -765,6 +776,8 @@ class HostActionController {
       req.write(jsonEncode({
         'ide_id': ideId,
         'restart_if_running': restart,
+        if (workspacePath != null && workspacePath.trim().isNotEmpty)
+          'workspace_path': workspacePath.trim(),
       }));
       final resp = await req.close().timeout(const Duration(seconds: 12));
       final body = await resp.transform(utf8.decoder).join();
@@ -899,6 +912,204 @@ class HostActionController {
       httpClient.close(force: true);
     }
     return (activeModel: '', models: const <String>[], source: '');
+  }
+
+  Future<ProjectListResponse?> fetchProjects() async {
+    final settings = _ref.read(settingsProvider);
+    final query = <String, String>{
+      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
+    };
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects', query);
+    if (uri == null) return null;
+    final httpClient = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final req = await httpClient.getUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 10));
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode != 200) return null;
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic> && decoded['ok'] == true) {
+        final rawList = (decoded['projects'] as List<dynamic>?) ?? const [];
+        final projects = rawList
+            .whereType<Map<String, dynamic>>()
+            .map(ProjectItem.fromJson)
+            .toList();
+        return ProjectListResponse(
+          projects: projects,
+          defaultRootDir:
+              (decoded['default_root_dir'] as String?)?.trim() ?? '',
+        );
+      }
+    } catch (_) {
+      return null;
+    } finally {
+      httpClient.close(force: true);
+    }
+    return null;
+  }
+
+  Future<(bool ok, ProjectItem? project, String message)> createProject({
+    required String name,
+    String? parentDir,
+    String? path,
+    String description = '',
+    bool initGit = true,
+    bool createReadme = true,
+    bool openInIde = true,
+    String ideId = 'antigravity',
+  }) async {
+    final settings = _ref.read(settingsProvider);
+    final query = <String, String>{
+      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
+    };
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects', query);
+    if (uri == null) return (false, null, 'Host 地址无效');
+    final httpClient = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final req = await httpClient.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({
+        'name': name.trim(),
+        if (parentDir != null && parentDir.trim().isNotEmpty)
+          'parent_dir': parentDir.trim(),
+        if (path != null && path.trim().isNotEmpty) 'path': path.trim(),
+        'description': description.trim(),
+        'init_git': initGit,
+        'create_readme': createReadme,
+        'open_in_ide': openInIde,
+        'ide_id': ideId,
+      }));
+      final resp = await req.close().timeout(const Duration(seconds: 15));
+      final body = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final ok = resp.statusCode == 200 && decoded['ok'] == true;
+        final rawProj = decoded['project'];
+        final proj = rawProj is Map<String, dynamic>
+            ? ProjectItem.fromJson(rawProj)
+            : null;
+        final ideLaunch = decoded['ide_launch'];
+        String msg = (decoded['message'] as String?) ?? '';
+        if (ok && msg.isEmpty) {
+          msg = ideLaunch is Map<String, dynamic> &&
+                  (ideLaunch['message'] as String?)?.isNotEmpty == true
+              ? '已创建项目「${proj?.name ?? name}」，${ideLaunch['message']}'
+              : '已创建项目「${proj?.name ?? name}」';
+        }
+        return (ok, proj, msg.isNotEmpty ? msg : (ok ? '项目已创建' : '创建失败'));
+      }
+      return (false, null, '返回格式异常');
+    } catch (e) {
+      return (false, null, '创建项目失败: $e');
+    } finally {
+      httpClient.close(force: true);
+    }
+  }
+
+  Future<(bool ok, String message)> assignSessionProject({
+    required String sessionId,
+    required String projectId,
+    String projectName = '',
+    String projectPath = '',
+  }) async {
+    final settings = _ref.read(settingsProvider);
+    final query = <String, String>{
+      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
+    };
+    final uri =
+        _buildHostHttpUri(settings.wsUrl, '/api/projects/assign', query);
+    if (uri == null) return (false, 'Host 地址无效');
+    final httpClient = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final req = await httpClient.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({
+        'session_id': sessionId,
+        'project_id': projectId,
+        if (projectName.isNotEmpty) 'project_name': projectName,
+        if (projectPath.isNotEmpty) 'project_path': projectPath,
+      }));
+      final resp = await req.close().timeout(const Duration(seconds: 10));
+      final body = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        final ok = resp.statusCode == 200 && decoded['ok'] == true;
+        final msg = (decoded['message'] as String?) ??
+            (ok
+                ? (projectId.isEmpty ? '已恢复自动识别项目' : '已更新会话归属项目')
+                : '归类失败');
+        return (ok, msg);
+      }
+      return (false, '返回格式异常');
+    } catch (e) {
+      return (false, '更新项目归属失败: $e');
+    } finally {
+      httpClient.close(force: true);
+    }
+  }
+
+  Future<(bool ok, String message)> openProjectInIde({
+    required String projectId,
+    String ideId = 'antigravity',
+  }) async {
+    final settings = _ref.read(settingsProvider);
+    final query = <String, String>{
+      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
+    };
+    final safeId = Uri.encodeComponent(projectId);
+    final uri =
+        _buildHostHttpUri(settings.wsUrl, '/api/projects/$safeId/open', query);
+    if (uri == null) return (false, 'Host 地址无效');
+    final httpClient = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final req = await httpClient.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({'ide_id': ideId}));
+      final resp = await req.close().timeout(const Duration(seconds: 12));
+      final body = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) {
+        return (
+          resp.statusCode == 200 && decoded['ok'] == true,
+          (decoded['message'] as String?) ?? '操作完成',
+        );
+      }
+      return (false, '返回格式异常');
+    } catch (e) {
+      return (false, '打开项目失败: $e');
+    } finally {
+      httpClient.close(force: true);
+    }
+  }
+
+  Future<bool> deleteProject(String projectId) async {
+    final settings = _ref.read(settingsProvider);
+    final query = <String, String>{
+      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
+    };
+    final safeId = Uri.encodeComponent(projectId);
+    final uri =
+        _buildHostHttpUri(settings.wsUrl, '/api/projects/$safeId', query);
+    if (uri == null) return false;
+    final httpClient = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final req = await httpClient.deleteUrl(uri);
+      final resp = await req.close().timeout(const Duration(seconds: 10));
+      final body = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(body);
+      return resp.statusCode == 200 &&
+          decoded is Map<String, dynamic> &&
+          decoded['ok'] == true;
+    } catch (_) {
+      return false;
+    } finally {
+      httpClient.close(force: true);
+    }
   }
 }
 
