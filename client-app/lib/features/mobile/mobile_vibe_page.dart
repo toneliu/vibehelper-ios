@@ -1275,6 +1275,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     final (ok, winId, msg) =
         await ref.read(hostActionProvider).focusHostIde(app.id);
     if (!mounted) return;
+    await _loadHostApps();
+    if (!mounted) return;
     if (ok) {
       await ref.read(windowControllerProvider.notifier).refresh();
       if (winId != null && winId.isNotEmpty) {
@@ -1284,6 +1286,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
           .read(windowContentProvider.notifier)
           .fetchContent(resetSession: true));
       unawaited(ref.read(windowContentProvider.notifier).fetchSnapshot());
+    } else {
+      await ref.read(windowControllerProvider.notifier).refresh();
     }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1318,9 +1322,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
           }
           if (!appsTriggered) {
             appsTriggered = true;
-            if ((ref.read(socketSnapshotProvider).valueOrNull?.isConnected ??
-                    false) &&
-                _ideApps.isEmpty) {
+            if (ref.read(socketSnapshotProvider).valueOrNull?.isConnected ??
+                false) {
               unawaited(
                 _loadHostApps().then((_) {
                   if (sheetOpen && ctx.mounted) {
