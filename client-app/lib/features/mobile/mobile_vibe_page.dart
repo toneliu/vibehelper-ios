@@ -688,16 +688,43 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     }
   }
 
-  void _interruptCurrentAgent() {
+  void _interruptCurrentAgent({bool pullLastPromptForEdit = false}) {
     HapticFeedback.mediumImpact();
+    _pauseSendTimer?.cancel();
     ref.read(hostActionProvider).sendControlKey(
           key: 'vh:interrupt',
           targetWindowId: ref.read(windowControllerProvider).selectedWindowId,
         );
-    Future<void>.delayed(const Duration(milliseconds: 700), () {
-      if (!mounted) return;
-      unawaited(ref.read(windowContentProvider.notifier).fetchContent());
-    });
+    if (pullLastPromptForEdit && _inputCtrl.text.trim().isEmpty) {
+      String? lastPrompt;
+      final blocks =
+          ref.read(windowContentProvider).content?.dialogBlocks ?? const [];
+      for (int i = blocks.length - 1; i >= 0; i--) {
+        if (blocks[i].role == 'user' && blocks[i].text.trim().isNotEmpty) {
+          lastPrompt = blocks[i].text.trim();
+          break;
+        }
+      }
+      lastPrompt ??=
+          _lastSentText.trim().isNotEmpty ? _lastSentText.trim() : null;
+      if (lastPrompt != null) {
+        _lastLocalEditAt = DateTime.now();
+        _inputCtrl.value = TextEditingValue(
+          text: lastPrompt,
+          selection: TextSelection.collapsed(offset: lastPrompt.length),
+        );
+        _inputFocus.requestFocus();
+        _scheduleDraftSync(delayMs: 220);
+        setState(() => _showPlusMenu = false);
+      }
+    }
+    _showTopNotice(pullLastPromptForEdit ? '已停止，可重新编辑发送' : '已发送停止指令');
+    for (final ms in const [500, 1400]) {
+      Future<void>.delayed(Duration(milliseconds: ms), () {
+        if (!mounted) return;
+        unawaited(ref.read(windowContentProvider.notifier).fetchContent());
+      });
+    }
   }
 
   Future<void> _interruptAndSteer(
@@ -2576,10 +2603,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
         // Fixed Collapsible Queued Messages Bar (above bottom composer)
         if (effectiveQueue.isNotEmpty) _buildQueuePanel(p, effectiveQueue),
 
-        // Interrupt & Steer Quick Bar when Agent is working and composer has draft text
-        if (connected &&
-            content?.agentStatus == 'working' &&
-            _inputCtrl.text.trim().isNotEmpty)
+        // Interrupt / Stop & Re-Edit Quick Bar when Agent is working
+        if (connected && content?.agentStatus == 'working')
           Padding(
             key: const ValueKey('vh_interrupt_bar'),
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
@@ -2589,32 +2614,82 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                 const SizedBox(width: 5),
                 Expanded(
                   child: Text(
-                    'Agent 运行中，可直接打断并引导新指令',
+                    _inputCtrl.text.trim().isNotEmpty
+                        ? 'Agent 运行中，可直接打断并引导新指令'
+                        : 'Agent 执行中…',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(fontSize: 11.5, color: p.muted),
                   ),
                 ),
+                if (_inputCtrl.text.trim().isNotEmpty)
+                  InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () => unawaited(
+                      _interruptAndSteer(_inputCtrl.text, clearComposer: true),
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 9, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: p.warning.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(8),
+                        border:
+                            Border.all(color: p.warning.withValues(alpha: 0.55)),
+                      ),
+                      child: Text(
+                        '打断并发送',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: p.warning,
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () =>
+                        _interruptCurrentAgent(pullLastPromptForEdit: true),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 9, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: p.accent.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                        border:
+                            Border.all(color: p.accent.withValues(alpha: 0.5)),
+                      ),
+                      child: Text(
+                        '停止并编辑',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: p.accent,
+                        ),
+                      ),
+                    ),
+                  ),
+                const SizedBox(width: 6),
                 InkWell(
                   borderRadius: BorderRadius.circular(8),
-                  onTap: () => unawaited(
-                    _interruptAndSteer(_inputCtrl.text, clearComposer: true),
-                  ),
+                  onTap: () => _interruptCurrentAgent(),
                   child: Container(
                     padding:
                         const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                     decoration: BoxDecoration(
-                      color: p.warning.withValues(alpha: 0.14),
+                      color: p.danger.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(8),
                       border:
-                          Border.all(color: p.warning.withValues(alpha: 0.55)),
+                          Border.all(color: p.danger.withValues(alpha: 0.55)),
                     ),
                     child: Text(
-                      '打断并发送当前内容',
+                      '停止',
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
-                        color: p.warning,
+                        color: p.danger,
                       ),
                     ),
                   ),
@@ -2631,7 +2706,12 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
           ),
 
         // LingGuang Floating Pill Composer
-        _buildFloatingPillComposer(p, connected, streamState),
+        _buildFloatingPillComposer(
+          p,
+          connected,
+          streamState,
+          isWorking: content?.agentStatus == 'working',
+        ),
       ],
     );
   }
@@ -3351,10 +3431,12 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
   Widget _buildFloatingPillComposer(
     VibePalette p,
     bool connected,
-    RemoteStreamState streamState,
-  ) {
+    RemoteStreamState streamState, {
+    bool isWorking = false,
+  }) {
     final hasText = _inputCtrl.text.trim().isNotEmpty;
     final canSend = hasText || _pendingAttachments.isNotEmpty;
+    final showStop = connected && !canSend && isWorking;
     final micOn = streamState.audioBridgeActive;
 
     return Padding(
@@ -3483,31 +3565,38 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
               ),
             ),
 
-            // Right Circular Action: Empty -> 👁 (Switch to 控屏 tab), Non-empty -> ↑ (Send)
+            // Right Circular Action: Send (when text/attachments) | Stop (when working) | Switch to 控屏
             InkWell(
               borderRadius: BorderRadius.circular(999),
               onTap: canSend
                   ? (connected ? () => _sendText() : null)
-                  : () {
-                      HapticFeedback.lightImpact();
-                      _switchToTab(1);
-                    },
+                  : showStop
+                      ? () =>
+                          _interruptCurrentAgent(pullLastPromptForEdit: true)
+                      : () {
+                          HapticFeedback.lightImpact();
+                          _switchToTab(1);
+                        },
               child: Container(
                 width: 40,
                 height: 40,
                 decoration: BoxDecoration(
                   color: canSend
                       ? (connected ? p.accent : p.muted)
-                      : p.panelAlt,
+                      : (showStop ? p.danger : p.panelAlt),
                   shape: BoxShape.circle,
-                  border: canSend ? null : Border.all(color: p.border),
+                  border: (canSend || showStop)
+                      ? null
+                      : Border.all(color: p.border),
                 ),
                 child: Icon(
                   canSend
                       ? Icons.arrow_upward_rounded
-                      : Icons.visibility_outlined,
+                      : (showStop
+                          ? Icons.stop_rounded
+                          : Icons.visibility_outlined),
                   size: 20,
-                  color: canSend ? Colors.white : p.text,
+                  color: (canSend || showStop) ? Colors.white : p.text,
                 ),
               ),
             ),
@@ -3562,7 +3651,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                     ),
                     InkWell(
                       borderRadius: BorderRadius.circular(7),
-                      onTap: _interruptCurrentAgent,
+                      onTap: () => _interruptCurrentAgent(),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
                             horizontal: 8, vertical: 3),
