@@ -60,6 +60,8 @@ if info_plist.exists():
     plist_data["ITSAppUsesNonExemptEncryption"] = False
     plist_data["NSSupportsLiveActivities"] = True
     plist_data["NSSupportsLiveActivitiesFrequentUpdates"] = True
+    plist_data["UIFileSharingEnabled"] = True
+    plist_data["LSSupportsOpeningDocumentsInPlace"] = True
     schemes = plist_data.get("LSApplicationQueriesSchemes")
     if not isinstance(schemes, list):
         schemes = []

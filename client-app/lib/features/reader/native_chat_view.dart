@@ -10,6 +10,7 @@ import '../../core/theme.dart';
 import '../../protocol/messages.dart';
 import '../connection/connection_controller.dart';
 import '../windows/window_controller.dart';
+import 'media_attachments.dart';
 import 'window_content_controller.dart';
 
 String _agentDisplayName(String agent) {
@@ -2250,6 +2251,8 @@ class _ChatTurnCardState extends State<_ChatTurnCard> {
                 const SizedBox(height: 5),
                 if (b.images.isNotEmpty)
                   _buildImageGallery(context, p, b.images),
+                if (b.attachments.isNotEmpty)
+                  _buildAttachments(context, b),
                 if (b.text.isNotEmpty)
                   VibeMarkdownView(data: b.text, baseColor: p.text),
               ],
@@ -2557,6 +2560,10 @@ class _ChatTurnCardState extends State<_ChatTurnCard> {
               const SizedBox(height: 8),
               _buildImageGallery(context, p, b.images),
             ],
+            if (b.attachments.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              _buildAttachments(context, b),
+            ],
             if (b.text.isNotEmpty) ...[
               const SizedBox(height: 8),
               VibeMarkdownView(
@@ -2571,25 +2578,21 @@ class _ChatTurnCardState extends State<_ChatTurnCard> {
     );
   }
 
-  String _resolveImageUrl(String raw) {
-    final trimmed = raw.trim();
-    if (trimmed.isEmpty) return '';
-    Uri? uri = Uri.tryParse(trimmed);
-    if (uri == null) return '';
-    if (!uri.hasScheme) {
-      if (widget.hostHttpBase.isEmpty) return '';
-      final base = Uri.tryParse(widget.hostHttpBase);
-      if (base == null) return '';
-      uri = base.resolveUri(uri);
-    }
-    final token = widget.hostToken.trim();
-    if (token.isNotEmpty && !uri.queryParameters.containsKey('token')) {
-      final qp = Map<String, String>.from(uri.queryParameters);
-      qp['token'] = token;
-      uri = uri.replace(queryParameters: qp);
-    }
-    return uri.toString();
+  Widget _buildAttachments(BuildContext context, DialogBlockItem b) {
+    return MediaAttachmentList(
+      attachments: b.attachments,
+      hostHttpBase: widget.hostHttpBase,
+      hostToken: widget.hostToken,
+      knownImageUrls: b.images,
+      onOpenImage: (url) => _showFullImageDialog(context, url),
+    );
   }
+
+  String _resolveImageUrl(String raw) => resolveHostMediaUrl(
+        raw,
+        hostHttpBase: widget.hostHttpBase,
+        hostToken: widget.hostToken,
+      );
 
   void _showFullImageDialog(BuildContext context, String url) {
     showDialog<void>(
@@ -2615,13 +2618,31 @@ class _ChatTurnCardState extends State<_ChatTurnCard> {
             Positioned(
               top: 8,
               right: 8,
-              child: Material(
-                color: Colors.black.withValues(alpha: 0.6),
-                shape: const CircleBorder(),
-                child: IconButton(
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  icon: const Icon(Icons.close_rounded, color: Colors.white),
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Material(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      tooltip: '下载图片',
+                      onPressed: () =>
+                          downloadAndSaveMediaUrl(ctx, url, openAfter: true),
+                      icon: const Icon(Icons.download_rounded,
+                          color: Colors.white),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Material(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    shape: const CircleBorder(),
+                    child: IconButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],

@@ -906,6 +906,56 @@ class PendingQuestionItem {
       };
 }
 
+/// File referenced by a dialog turn that can be previewed / played / downloaded.
+/// `url` is host-relative (`/api/media?path=...`) and needs the host token appended.
+class MediaAttachment {
+  const MediaAttachment({
+    required this.url,
+    this.kind = 'file',
+    this.name = '',
+    this.mime = '',
+    this.size = 0,
+    this.path = '',
+  });
+
+  final String url;
+
+  /// image | audio | video | file
+  final String kind;
+  final String name;
+  final String mime;
+  final int size;
+  final String path;
+
+  bool get isImage => kind == 'image';
+  bool get isAudio => kind == 'audio';
+  bool get isVideo => kind == 'video';
+
+  String get displayName {
+    if (name.isNotEmpty) return name;
+    final segs = path.split(RegExp(r'[\\/]'));
+    return segs.isNotEmpty && segs.last.isNotEmpty ? segs.last : '文件';
+  }
+
+  factory MediaAttachment.fromJson(Map<String, dynamic> json) => MediaAttachment(
+        url: (json['url'] as String?) ?? '',
+        kind: (json['kind'] as String?) ?? 'file',
+        name: (json['name'] as String?) ?? '',
+        mime: (json['mime'] as String?) ?? '',
+        size: (json['size'] as num?)?.toInt() ?? 0,
+        path: (json['path'] as String?) ?? '',
+      );
+
+  Map<String, dynamic> toJson() => {
+        'url': url,
+        'kind': kind,
+        'name': name,
+        'mime': mime,
+        'size': size,
+        'path': path,
+      };
+}
+
 class DialogBlockItem {
   const DialogBlockItem({
     this.role = 'text',
@@ -914,6 +964,7 @@ class DialogBlockItem {
     this.toolCalls = const [],
     this.diffItems = const [],
     this.images = const [],
+    this.attachments = const [],
     this.timestamp = '',
     this.model = '',
   });
@@ -924,6 +975,7 @@ class DialogBlockItem {
   final List<String> toolCalls;
   final List<DiffChangeItem> diffItems;
   final List<String> images;
+  final List<MediaAttachment> attachments;
   final String timestamp;
   final String model;
 
@@ -931,6 +983,7 @@ class DialogBlockItem {
     final rawTools = (json['tool_calls'] as List<dynamic>?) ?? const [];
     final rawDiffs = (json['diff_items'] as List<dynamic>?) ?? const [];
     final rawImages = (json['images'] as List<dynamic>?) ?? const [];
+    final rawAttachments = (json['attachments'] as List<dynamic>?) ?? const [];
     return DialogBlockItem(
       role: (json['role'] as String?) ?? 'text',
       text: (json['text'] as String?) ?? '',
@@ -944,6 +997,11 @@ class DialogBlockItem {
           .map((e) => e.toString())
           .where((s) => s.isNotEmpty)
           .toList(),
+      attachments: rawAttachments
+          .whereType<Map<String, dynamic>>()
+          .map(MediaAttachment.fromJson)
+          .where((a) => a.url.isNotEmpty)
+          .toList(),
       timestamp: (json['timestamp'] as String?) ?? '',
       model: (json['model'] as String?) ?? '',
     );
@@ -956,6 +1014,7 @@ class DialogBlockItem {
         'tool_calls': toolCalls,
         'diff_items': diffItems.map((d) => d.toJson()).toList(),
         'images': images,
+        'attachments': attachments.map((a) => a.toJson()).toList(),
         'timestamp': timestamp,
         'model': model,
       };
