@@ -63,6 +63,9 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
   DateTime _lastLocalEditAt = DateTime.fromMillisecondsSinceEpoch(0);
   String _lastSyncedDraft = '';
   bool _applyingRemoteDraft = false;
+  bool _isSending = false;
+  String _lastSentText = '';
+  DateTime _lastSentAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   int _tabIndex = 0; // 0: 对话, 1: 控屏, 2: 终端, 3: 主机, 4: 我的
   int _screenSubMode = 1; // 0: 静态快照, 1: 实时画面
@@ -534,6 +537,11 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     }
     final incomingNorm =
         msg.text.replaceAll('\r\n', '\n').replaceAll('\u00a0', ' ');
+    if (incomingNorm.trim().isNotEmpty &&
+        incomingNorm.trim() == _lastSentText &&
+        DateTime.now().difference(_lastSentAt).inMilliseconds < 6000) {
+      return;
+    }
     final localNorm =
         _inputCtrl.text.replaceAll('\r\n', '\n').replaceAll('\u00a0', ' ');
     if (incomingNorm == localNorm) {
@@ -575,79 +583,107 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     String? overrideText,
     bool skipLocalQueue = false,
   }) async {
-    _pauseSendTimer?.cancel();
-    _draftSyncDebounce?.cancel();
-    final text = (overrideText ?? _inputCtrl.text).trim();
-    if (text.isEmpty) {
-      if (overrideText == null && _pendingAttachments.isNotEmpty) {
-        final connected =
-            ref.read(socketSnapshotProvider).valueOrNull?.isConnected ?? false;
-        if (!connected) return;
-        final winState = ref.read(windowControllerProvider);
-        HapticFeedback.mediumImpact();
-        ref.read(hostActionProvider).sendControlKey(
-              key: 'Enter',
-              targetWindowId: winState.selectedWindowId,
-            );
+    if (_isSending) return;
+    _isSending = true;
+    try {
+      _pauseSendTimer?.cancel();
+      _draftSyncDebounce?.cancel();
+      final text = (overrideText ?? _inputCtrl.text).trim();
+      if (text.isEmpty) {
+        if (overrideText == null && _pendingAttachments.isNotEmpty) {
+          final connected =
+              ref.read(socketSnapshotProvider).valueOrNull?.isConnected ?? false;
+          if (!connected) return;
+          final winState = ref.read(windowControllerProvider);
+          HapticFeedback.mediumImpact();
+          ref.read(hostActionProvider).sendControlKey(
+                key: 'Enter',
+                targetWindowId: winState.selectedWindowId,
+              );
+          setState(() {
+            _showPlusMenu = false;
+            _pendingAttachments.clear();
+          });
+          Future<void>.delayed(const Duration(milliseconds: 1200), () {
+            if (!mounted) return;
+            unawaited(ref.read(windowContentProvider.notifier).fetchContent());
+          });
+        }
+        return;
+      }
+
+      _lastLocalEditAt = DateTime.now();
+      _lastSentText = text;
+      _lastSentAt = _lastLocalEditAt;
+      final winState = ref.read(windowControllerProvider);
+      final selected = winState.selectedWindow;
+      final previousText = overrideText == null ? _inputCtrl.text : '';
+      if (overrideText == null) {
+        _lastSyncedDraft = '';
+        _applyingRemoteDraft = true;
+        _inputCtrl.clear();
+        _applyingRemoteDraft = false;
+      }
+      HapticFeedback.mediumImpact();
+
+      final res = await ref.read(hostActionProvider).injectText(
+            text: text,
+            targetWindowId: winState.selectedWindowId,
+            targetWindowTitle:
+                selected != null ? '[${selected.app}] ${selected.title}' : '当前焦点窗口',
+            source: overrideText != null ? 'quick_command' : 'stt_final',
+            autoEnter: true,
+          );
+
+      if (!mounted) return;
+      if (res != null && res.ok) {
+        final contentBeforeSend = ref.read(windowContentProvider).content;
+        final isWorking = contentBeforeSend?.agentStatus == 'working';
+        _lastSyncedDraft = res.autoEnterSent ? '' : text;
+        if (overrideText == null && !res.autoEnterSent && _inputCtrl.text.isEmpty) {
+          _applyingRemoteDraft = true;
+          _inputCtrl.value = TextEditingValue(
+            text: previousText,
+            selection: TextSelection.collapsed(offset: previousText.length),
+          );
+          _applyingRemoteDraft = false;
+        }
         setState(() {
           _showPlusMenu = false;
-          _pendingAttachments.clear();
+          if (overrideText == null && res.autoEnterSent) {
+            _pendingAttachments.clear();
+          }
+          if (isWorking &&
+              !skipLocalQueue &&
+              !_localQueuedMessages.contains(text)) {
+            _localQueuedMessages.add(text);
+            _localQueueAddedAt[text] = DateTime.now();
+          }
         });
         Future<void>.delayed(const Duration(milliseconds: 1200), () {
           if (!mounted) return;
           unawaited(ref.read(windowContentProvider.notifier).fetchContent());
         });
-      }
-      return;
-    }
-
-    _lastLocalEditAt = DateTime.now();
-    final winState = ref.read(windowControllerProvider);
-    final selected = winState.selectedWindow;
-    HapticFeedback.mediumImpact();
-
-    final res = await ref.read(hostActionProvider).injectText(
-          text: text,
-          targetWindowId: winState.selectedWindowId,
-          targetWindowTitle:
-              selected != null ? '[${selected.app}] ${selected.title}' : '当前焦点窗口',
-          source: overrideText != null ? 'quick_command' : 'stt_final',
-          autoEnter: true,
+      } else {
+        if (overrideText == null && _inputCtrl.text.isEmpty && previousText.isNotEmpty) {
+          _lastSyncedDraft = previousText;
+          _applyingRemoteDraft = true;
+          _inputCtrl.value = TextEditingValue(
+            text: previousText,
+            selection: TextSelection.collapsed(offset: previousText.length),
+          );
+          _applyingRemoteDraft = false;
+          setState(() {});
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('发送失败，请检查被控端连接或目标窗口'),
+            duration: Duration(seconds: 2),
+          ),
         );
-
-    if (!mounted) return;
-    if (res != null && res.ok) {
-      final contentBeforeSend = ref.read(windowContentProvider).content;
-      final isWorking = contentBeforeSend?.agentStatus == 'working';
-      _lastSyncedDraft = res.autoEnterSent ? '' : text;
-      if (overrideText == null && res.autoEnterSent) {
-        _applyingRemoteDraft = true;
-        _inputCtrl.clear();
-        _applyingRemoteDraft = false;
       }
-      setState(() {
-        _showPlusMenu = false;
-        if (overrideText == null && res.autoEnterSent) {
-          _pendingAttachments.clear();
-        }
-        if (isWorking &&
-            !skipLocalQueue &&
-            !_localQueuedMessages.contains(text)) {
-          _localQueuedMessages.add(text);
-          _localQueueAddedAt[text] = DateTime.now();
-        }
-      });
-      Future<void>.delayed(const Duration(milliseconds: 1200), () {
-        if (!mounted) return;
-        unawaited(ref.read(windowContentProvider.notifier).fetchContent());
-      });
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('发送失败，请检查被控端连接或目标窗口'),
-          duration: Duration(seconds: 2),
-        ),
-      );
+    } finally {
+      _isSending = false;
     }
   }
 

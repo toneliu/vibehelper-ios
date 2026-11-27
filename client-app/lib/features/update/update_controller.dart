@@ -515,7 +515,8 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
       clearError: true,
     );
 
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    HttpClient client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8);
     try {
       final canInstall =
           await _channel.invokeMethod<bool>('canInstallPackages') ?? true;
@@ -535,43 +536,162 @@ class AppUpdateController extends StateNotifier<AppUpdateState> {
         throw StateError('无法获取应用缓存目录');
       }
       final outPath = '$cacheDir/vibehelper-update.apk';
+      final partFile = File('$outPath.part');
+      final metaFile = File('$outPath.meta');
       final outFile = File(outPath);
-      final req = await client.getUrl(Uri.parse(decision.downloadUrl));
-      final resp = await req.close().timeout(const Duration(minutes: 5));
-      if (resp.statusCode != 200) {
-        throw HttpException('下载失败 (HTTP ${resp.statusCode})');
-      }
 
-      final total = resp.contentLength > 0 ? resp.contentLength : decision.sizeBytes;
+      final expectedSha = decision.sha256.trim().toLowerCase();
+      int total = decision.sizeBytes;
       int received = 0;
-      final sink = outFile.openWrite();
-      try {
-        await for (final chunk in resp) {
-          sink.add(chunk);
-          received += chunk.length;
-          if (total > 0) {
+
+      if (partFile.existsSync()) {
+        final existingMeta = metaFile.existsSync()
+            ? (await metaFile.readAsString()).trim().toLowerCase()
+            : '';
+        final existingLen = await partFile.length();
+        final matchesMeta =
+            expectedSha.isNotEmpty && existingMeta == expectedSha;
+        final validLen =
+            existingLen > 0 && (total <= 0 || existingLen <= total);
+        if (matchesMeta && validLen) {
+          received = existingLen;
+        } else {
+          await partFile.delete();
+        }
+      }
+      await metaFile.writeAsString(expectedSha);
+
+      const int chunkBytes = 1024 * 1024; // 1 MB resumable range chunks
+      const int maxZeroProgressRetries = 8;
+      int consecutiveErrors = 0;
+      int lastUiBytes = received;
+
+      while (total <= 0 || received < total) {
+        final int beforeAttempt = received;
+        try {
+          final uri = Uri.parse(decision.downloadUrl);
+          final req = await client.getUrl(uri);
+          final int rangeEnd = total > 0
+              ? math.min(received + chunkBytes - 1, total - 1)
+              : (received + chunkBytes - 1);
+          req.headers.set(HttpHeaders.rangeHeader, 'bytes=$received-$rangeEnd');
+          final resp = await req.close().timeout(const Duration(seconds: 35));
+
+          if (resp.statusCode == 416) {
+            await resp.drain<void>();
+            if (total > 0 && received >= total) break;
+            throw const HttpException('下载失败 (HTTP 416)');
+          }
+          if (resp.statusCode == 401 ||
+              resp.statusCode == 403 ||
+              resp.statusCode == 404) {
+            await resp.drain<void>();
+            throw StateError('下载失败 (HTTP ${resp.statusCode})');
+          }
+          if (resp.statusCode != 206 && resp.statusCode != 200) {
+            await resp.drain<void>();
+            throw HttpException('下载失败 (HTTP ${resp.statusCode})');
+          }
+
+          final bool isPartial = resp.statusCode == 206;
+          if (isPartial) {
+            if (total <= 0) {
+              final cr = resp.headers.value(HttpHeaders.contentRangeHeader) ?? '';
+              final m = RegExp(r'bytes\s+\d+-\d+/(\d+)').firstMatch(cr);
+              if (m != null) {
+                total = int.tryParse(m.group(1)!) ?? total;
+              }
+            }
+          } else {
+            received = 0;
+            lastUiBytes = 0;
+            if (total <= 0 && resp.contentLength > 0) {
+              total = resp.contentLength;
+            }
+          }
+
+          final sink = partFile.openWrite(
+            mode: isPartial ? FileMode.append : FileMode.write,
+          );
+          try {
+            await for (final chunk
+                in resp.timeout(const Duration(seconds: 35))) {
+              sink.add(chunk);
+              received += chunk.length;
+              if (total > 0 &&
+                  ((received - lastUiBytes) >= 128 * 1024 ||
+                      received >= total)) {
+                lastUiBytes = received;
+                state = state.copyWith(
+                  downloadProgress: (received / total).clamp(0.0, 1.0),
+                  statusMessage:
+                      '下载中 ${(received / (1024 * 1024)).toStringAsFixed(1)} / ${(total / (1024 * 1024)).toStringAsFixed(1)} MB',
+                );
+              }
+            }
+            await sink.flush();
+          } finally {
+            await sink.close();
+          }
+
+          consecutiveErrors = 0;
+          if (total > 0 &&
+              ((received - lastUiBytes) > 0 || received >= total)) {
+            lastUiBytes = received;
             state = state.copyWith(
               downloadProgress: (received / total).clamp(0.0, 1.0),
               statusMessage:
                   '下载中 ${(received / (1024 * 1024)).toStringAsFixed(1)} / ${(total / (1024 * 1024)).toStringAsFixed(1)} MB',
             );
           }
+          if (!isPartial && total <= 0) break;
+        } catch (e) {
+          if (e is! HttpException &&
+              e is! SocketException &&
+              e is! TimeoutException &&
+              e is! IOException) {
+            rethrow;
+          }
+          received = partFile.existsSync() ? await partFile.length() : 0;
+          lastUiBytes = received;
+          if (received > beforeAttempt) {
+            consecutiveErrors = 0;
+          } else {
+            consecutiveErrors += 1;
+          }
+          if (consecutiveErrors >= maxZeroProgressRetries) {
+            rethrow;
+          }
+          client.close(force: true);
+          client = HttpClient()
+            ..connectionTimeout = const Duration(seconds: 8);
+          state = state.copyWith(
+            downloadProgress:
+                total > 0 ? (received / total).clamp(0.0, 1.0) : null,
+            statusMessage:
+                '网络波动，正在断点续传 (${(received / (1024 * 1024)).toStringAsFixed(1)} MB)...',
+          );
+          await Future<void>.delayed(
+            Duration(milliseconds: math.min(2500, 400 * (consecutiveErrors + 1))),
+          );
         }
-        await sink.flush();
-      } finally {
-        await sink.close();
       }
 
       if (received <= 0) {
         throw const HttpException('下载的 APK 为空');
       }
-      if (decision.sha256.isNotEmpty) {
+      if (expectedSha.isNotEmpty) {
         state = state.copyWith(statusMessage: '正在校验安装包完整性...');
-        final actualSha = await compute(_sha256FilePathSync, outPath);
-        if (actualSha != decision.sha256.toLowerCase()) {
+        final actualSha = await compute(_sha256FilePathSync, partFile.path);
+        if (actualSha != expectedSha) {
+          if (partFile.existsSync()) await partFile.delete();
+          if (metaFile.existsSync()) await metaFile.delete();
           throw HttpException('安装包校验失败（文件可能损坏）');
         }
       }
+      if (outFile.existsSync()) await outFile.delete();
+      await partFile.rename(outFile.path);
+      if (metaFile.existsSync()) await metaFile.delete();
       state = state.copyWith(
         downloadProgress: 1.0,
         statusMessage: '校验通过，正在调起系统安装器...',
