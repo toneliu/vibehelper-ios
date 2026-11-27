@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:record/record.dart';
 
+import '../../core/app_settings.dart';
 import '../../core/vibe_socket_client.dart';
 import '../../protocol/messages.dart';
 import '../connection/connection_controller.dart';
@@ -838,21 +839,38 @@ class RemoteStreamController extends StateNotifier<RemoteStreamState> {
 final remoteStreamProvider =
     StateNotifierProvider<RemoteStreamController, RemoteStreamState>((ref) {
   final ctrl = RemoteStreamController(ref);
-  final initialHot = ref.read(appUpdateProvider).hotConfig;
-  ctrl.updateVoiceGateThresholds(
-    speechPeakThreshold: initialHot.vadPeakThreshold,
-    speechRmsThreshold: initialHot.vadRmsThreshold,
-    hangoverMs: initialHot.vadHangoverMs,
-  );
-  ref.listen<HotUpdateConfig>(
-    appUpdateProvider.select((s) => s.hotConfig),
-    (_, cfg) {
+
+  void applyVad() {
+    final s = ref.read(settingsProvider);
+    final cfg = ref.read(appUpdateProvider).hotConfig;
+    if (s.vadUseLocalOverride) {
+      ctrl.updateVoiceGateThresholds(
+        speechPeakThreshold: s.vadPeakThreshold,
+        speechRmsThreshold: s.vadRmsThreshold.toDouble(),
+        hangoverMs: s.vadHangoverMs,
+      );
+    } else {
       ctrl.updateVoiceGateThresholds(
         speechPeakThreshold: cfg.vadPeakThreshold,
         speechRmsThreshold: cfg.vadRmsThreshold,
         hangoverMs: cfg.vadHangoverMs,
       );
-    },
+    }
+  }
+
+  applyVad();
+  ref.listen<HotUpdateConfig>(
+    appUpdateProvider.select((s) => s.hotConfig),
+    (_, __) => applyVad(),
+  );
+  ref.listen<(bool, int, int, int)>(
+    settingsProvider.select((s) => (
+          s.vadUseLocalOverride,
+          s.vadPeakThreshold,
+          s.vadRmsThreshold,
+          s.vadHangoverMs,
+        )),
+    (_, __) => applyVad(),
   );
   return ctrl;
 });

@@ -100,9 +100,9 @@ class HotUpdateConfig {
     this.hotVersion = 1,
     this.updatedAt = '',
     this.changelog = '',
-    this.vadPeakThreshold = 520,
-    this.vadRmsThreshold = 180.0,
-    this.vadHangoverMs = 450,
+    this.vadPeakThreshold = 220,
+    this.vadRmsThreshold = 75.0,
+    this.vadHangoverMs = 600,
     this.quickCommands = const [],
     this.announcement = '',
   });
@@ -124,10 +124,10 @@ class HotUpdateConfig {
       updatedAt: (json['updated_at'] as String?) ?? '',
       changelog: (json['changelog'] as String?) ?? '',
       vadPeakThreshold:
-          (vad['speech_peak_threshold'] as num?)?.toInt() ?? 520,
+          (vad['speech_peak_threshold'] as num?)?.toInt() ?? 220,
       vadRmsThreshold:
-          (vad['speech_rms_threshold'] as num?)?.toDouble() ?? 180.0,
-      vadHangoverMs: (vad['hangover_ms'] as num?)?.toInt() ?? 450,
+          (vad['speech_rms_threshold'] as num?)?.toDouble() ?? 75.0,
+      vadHangoverMs: (vad['hangover_ms'] as num?)?.toInt() ?? 600,
       quickCommands: rawCmds
           .map((e) => e.toString().trim())
           .where((s) => s.isNotEmpty)

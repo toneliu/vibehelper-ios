@@ -4835,6 +4835,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     required SocketSnapshot connSnap,
   }) {
     final settingsCtrl = ref.read(settingsProvider.notifier);
+    final hotCfg = ref.watch(appUpdateProvider).hotConfig;
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 22),
@@ -5362,6 +5363,138 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                 ],
               ),
             ),
+            Divider(height: 1, color: p.border),
+            SwitchListTile(
+              title: Text('本机自定义语音门限 (VAD)',
+                  style: TextStyle(fontSize: 14, color: p.text)),
+              subtitle: Text(
+                settings.vadUseLocalOverride
+                    ? '已启用本机参数（即时生效，不被宿主机热更新覆盖）'
+                    : '跟随宿主机热补丁 #${hotCfg.hotVersion}（峰值 ${hotCfg.vadPeakThreshold} · RMS ${hotCfg.vadRmsThreshold.round()} · 尾音 ${hotCfg.vadHangoverMs}ms）',
+                style: TextStyle(fontSize: 11.5, color: p.muted),
+              ),
+              value: settings.vadUseLocalOverride,
+              onChanged: (v) {
+                settingsCtrl.update(
+                  v
+                      ? settings.copyWith(
+                          vadUseLocalOverride: true,
+                          vadPeakThreshold: settings.vadPeakThreshold,
+                          vadRmsThreshold: settings.vadRmsThreshold,
+                          vadHangoverMs: settings.vadHangoverMs,
+                        )
+                      : settings.copyWith(vadUseLocalOverride: false),
+                );
+              },
+            ),
+            if (settings.vadUseLocalOverride) ...[
+              Divider(height: 1, color: p.border),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: [
+                        for (final (label, peak, rms, hang) in const [
+                          ('超灵敏（轻声）', 120, 45, 700),
+                          ('标准（推荐）', 220, 75, 600),
+                          ('强抗噪（嘈杂）', 520, 180, 450),
+                        ])
+                          ActionChip(
+                            label:
+                                Text(label, style: const TextStyle(fontSize: 12)),
+                            visualDensity: VisualDensity.compact,
+                            backgroundColor: (settings.vadPeakThreshold == peak &&
+                                    settings.vadRmsThreshold == rms &&
+                                    settings.vadHangoverMs == hang)
+                                ? p.accent.withValues(alpha: 0.16)
+                                : p.panelAlt,
+                            side: BorderSide(
+                              color: (settings.vadPeakThreshold == peak &&
+                                      settings.vadRmsThreshold == rms &&
+                                      settings.vadHangoverMs == hang)
+                                  ? p.accent
+                                  : p.border,
+                            ),
+                            onPressed: () {
+                              settingsCtrl.update(
+                                settings.copyWith(
+                                  vadPeakThreshold: peak,
+                                  vadRmsThreshold: rms,
+                                  vadHangoverMs: hang,
+                                ),
+                              );
+                            },
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    for (final (title, valueText, value, minV, maxV, divs, onVal)
+                        in [
+                      (
+                        '峰值门限（越低越灵敏）',
+                        '${settings.vadPeakThreshold}',
+                        settings.vadPeakThreshold.toDouble().clamp(80.0, 1200.0),
+                        80.0,
+                        1200.0,
+                        112,
+                        (double v) => settingsCtrl.update(
+                              settings.copyWith(vadPeakThreshold: v.round()),
+                            ),
+                      ),
+                      (
+                        'RMS 门限（越低越灵敏）',
+                        '${settings.vadRmsThreshold}',
+                        settings.vadRmsThreshold.toDouble().clamp(30.0, 500.0),
+                        30.0,
+                        500.0,
+                        94,
+                        (double v) => settingsCtrl.update(
+                              settings.copyWith(vadRmsThreshold: v.round()),
+                            ),
+                      ),
+                      (
+                        '尾音保持（防止吞字）',
+                        '${settings.vadHangoverMs} ms',
+                        settings.vadHangoverMs.toDouble().clamp(200.0, 1500.0),
+                        200.0,
+                        1500.0,
+                        26,
+                        (double v) => settingsCtrl.update(
+                              settings.copyWith(vadHangoverMs: v.round()),
+                            ),
+                      ),
+                    ]) ...[
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(title,
+                              style: TextStyle(fontSize: 13, color: p.text)),
+                          Text(
+                            valueText,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                              color: p.accent,
+                            ),
+                          ),
+                        ],
+                      ),
+                      Slider(
+                        value: value,
+                        min: minV,
+                        max: maxV,
+                        divisions: divs,
+                        onChanged: onVal,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
         const SizedBox(height: 12),

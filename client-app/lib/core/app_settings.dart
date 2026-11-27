@@ -157,6 +157,10 @@ class AppSettings {
     this.islandYOffset = 6,
     this.islandWidth = 140,
     this.backgroundKeepAlive = true,
+    this.vadUseLocalOverride = false,
+    this.vadPeakThreshold = 220,
+    this.vadRmsThreshold = 75,
+    this.vadHangoverMs = 600,
   });
 
   final String wsUrl;
@@ -181,6 +185,10 @@ class AppSettings {
   final int islandYOffset;
   final int islandWidth;
   final bool backgroundKeepAlive;
+  final bool vadUseLocalOverride;
+  final int vadPeakThreshold;
+  final int vadRmsThreshold;
+  final int vadHangoverMs;
 
   HostProfile get activeHost {
     for (final h in hostProfiles) {
@@ -218,6 +226,10 @@ class AppSettings {
     int? islandYOffset,
     int? islandWidth,
     bool? backgroundKeepAlive,
+    bool? vadUseLocalOverride,
+    int? vadPeakThreshold,
+    int? vadRmsThreshold,
+    int? vadHangoverMs,
   }) {
     return AppSettings(
       wsUrl: wsUrl ?? this.wsUrl,
@@ -242,6 +254,10 @@ class AppSettings {
       islandYOffset: islandYOffset ?? this.islandYOffset,
       islandWidth: islandWidth ?? this.islandWidth,
       backgroundKeepAlive: backgroundKeepAlive ?? this.backgroundKeepAlive,
+      vadUseLocalOverride: vadUseLocalOverride ?? this.vadUseLocalOverride,
+      vadPeakThreshold: vadPeakThreshold ?? this.vadPeakThreshold,
+      vadRmsThreshold: vadRmsThreshold ?? this.vadRmsThreshold,
+      vadHangoverMs: vadHangoverMs ?? this.vadHangoverMs,
     );
   }
 }
@@ -357,6 +373,13 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
         islandWidth: prefs.getInt('vh_island_width') ?? state.islandWidth,
         backgroundKeepAlive:
             prefs.getBool('vh_bg_keep_alive') ?? state.backgroundKeepAlive,
+        vadUseLocalOverride:
+            prefs.getBool('vh_vad_local_override') ?? state.vadUseLocalOverride,
+        vadPeakThreshold:
+            prefs.getInt('vh_vad_peak') ?? state.vadPeakThreshold,
+        vadRmsThreshold: prefs.getInt('vh_vad_rms') ?? state.vadRmsThreshold,
+        vadHangoverMs:
+            prefs.getInt('vh_vad_hangover_ms') ?? state.vadHangoverMs,
       );
     } catch (_) {}
   }
@@ -467,6 +490,10 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
       prefs.setInt('vh_island_y_offset', s.islandYOffset),
       prefs.setInt('vh_island_width', s.islandWidth),
       prefs.setBool('vh_bg_keep_alive', s.backgroundKeepAlive),
+      prefs.setBool('vh_vad_local_override', s.vadUseLocalOverride),
+      prefs.setInt('vh_vad_peak', s.vadPeakThreshold),
+      prefs.setInt('vh_vad_rms', s.vadRmsThreshold),
+      prefs.setInt('vh_vad_hangover_ms', s.vadHangoverMs),
     ]);
   }
 }

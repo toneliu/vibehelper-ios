@@ -8,9 +8,9 @@ import 'dart:typed_data';
 /// word onsets and trailing syllables are never clipped.
 class PcmVoiceGate {
   PcmVoiceGate({
-    int speechPeakThreshold = 520,
-    double speechRmsThreshold = 180.0,
-    int hangoverMs = 450,
+    int speechPeakThreshold = 220,
+    double speechRmsThreshold = 75.0,
+    int hangoverMs = 600,
     this.maxPrerollChunks = 1,
   })  : _speechPeakThreshold = speechPeakThreshold.clamp(80, 16000),
         _speechRmsThreshold = speechRmsThreshold.clamp(30.0, 8000.0),
