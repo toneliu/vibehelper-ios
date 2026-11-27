@@ -109,6 +109,67 @@ def compute_metadata(repo_root: pathlib.Path, *, build_id: str | None = None) ->
     }
 
 
+def build_github_altstore_source(
+    *,
+    meta: dict[str, Any],
+    ipa_size: int,
+    download_url: str,
+    updated_at: str,
+    changelog: str = "",
+    bundle_id: str = "com.example.vibehelperClient",
+    icon_url: str = "",
+) -> dict[str, Any]:
+    """Build an AltStore / SideStore v2 compatible JSON source pointing to an HTTPS IPA URL."""
+    ver = str(meta.get("version") or "0.7.0")
+    build_num = str(meta.get("build_number") or "1")
+    build_id = str(meta.get("build_id") or "").strip()
+    safe_bid = re.sub(r"[^a-zA-Z0-9._-]", "", bundle_id) or "com.example.vibehelperClient"
+    desc = (changelog or "").strip() or (
+        f"VibeHelper iOS v{ver} ({build_id or build_num}) · 支持后台灵动岛像素宠物动画与语音协同"
+    )
+    clean_dl = download_url.strip()
+    version_entry: dict[str, Any] = {
+        "version": ver,
+        "buildVersion": build_num,
+        "date": updated_at,
+        "localizedDescription": desc,
+        "downloadURL": clean_dl,
+        "size": int(ipa_size),
+        "minOSVersion": "15.0",
+    }
+    app_entry: dict[str, Any] = {
+        "name": "VibeHelper",
+        "bundleIdentifier": safe_bid,
+        "developerName": "VibeHelper",
+        "subtitle": "远程 AI IDE 控制台与灵动岛协同",
+        "localizedDescription": (
+            "通过 GitHub Releases (HTTPS) 自动分发 VibeHelper iOS IPA，"
+            "兼容 AltStore / SideStore，一键保活灵动岛与远程控制 AI IDE。"
+        ),
+        "tintColor": "#4F46E5",
+        "category": "developer",
+        "versions": [version_entry] if clean_dl else [],
+        "appPermissions": {
+            "entitlements": [],
+            "privacy": {
+                "NSMicrophoneUsageDescription": "VibeHelper 需要麦克风权限，用于远程语音输入与实时语音直传",
+                "NSLocalNetworkUsageDescription": "VibeHelper 需要访问局域网，以连接同一 Wi-Fi 或 VPN 下的桌面宿主机与 AI IDE",
+                "NSSpeechRecognitionUsageDescription": "VibeHelper 需要语音识别权限，将您的语音指令实时转为开发对话",
+            },
+        },
+    }
+    if icon_url.strip():
+        app_entry["iconURL"] = icon_url.strip()
+    return {
+        "name": "VibeHelper (GitHub)",
+        "identifier": "com.vibehelper.github.source",
+        "subtitle": "VibeHelper iOS 自动构建更新源 (GitHub Releases HTTPS)",
+        "tintColor": "#4F46E5",
+        "apps": [app_entry],
+        "news": [],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compute VibeHelper update manifest / dart-defines")
     parser.add_argument(
@@ -124,6 +185,10 @@ def main() -> int:
     parser.add_argument("--ios-ipa", type=pathlib.Path, default=None)
     parser.add_argument("--windows-zip", type=pathlib.Path, default=None)
     parser.add_argument("--changelog", default="", help="Optional changelog note")
+    parser.add_argument("--altstore-out", type=pathlib.Path, default=None)
+    parser.add_argument("--altstore-download-url", default="")
+    parser.add_argument("--bundle-id", default="com.example.vibehelperClient")
+    parser.add_argument("--icon-url", default="")
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
@@ -141,6 +206,8 @@ def main() -> int:
         print(" ".join(flags))
         return 0
 
+    now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out_dir: pathlib.Path | None = None
     if args.publish_dir is not None:
         out_dir = args.publish_dir.expanduser().resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -155,7 +222,6 @@ def main() -> int:
                 pass
 
         packages = existing.get("packages") if isinstance(existing.get("packages"), dict) else {}
-        now_iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         artifacts = {
             "android": args.android_apk,
@@ -201,6 +267,32 @@ def main() -> int:
             encoding="utf-8",
         )
         print(f"Published update manifest to {manifest_path}")
+
+    if args.altstore_out is not None:
+        ipa_candidate = args.ios_ipa.expanduser().resolve() if args.ios_ipa is not None else None
+        if (ipa_candidate is None or not ipa_candidate.is_file()) and out_dir is not None:
+            fallback_ipa = out_dir / PLATFORM_FILENAMES["ios"]
+            if fallback_ipa.is_file():
+                ipa_candidate = fallback_ipa
+        ipa_size = ipa_candidate.stat().st_size if (ipa_candidate is not None and ipa_candidate.is_file()) else 0
+        alt_out = args.altstore_out.expanduser().resolve()
+        alt_out.parent.mkdir(parents=True, exist_ok=True)
+        alt_payload = build_github_altstore_source(
+            meta=meta,
+            ipa_size=ipa_size,
+            download_url=args.altstore_download_url,
+            updated_at=now_iso,
+            changelog=args.changelog,
+            bundle_id=args.bundle_id,
+            icon_url=args.icon_url,
+        )
+        alt_out.write_text(
+            json.dumps(alt_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Published AltStore source to {alt_out}")
+
+    if args.publish_dir is not None or args.altstore_out is not None:
         if not args.print_json:
             return 0
 

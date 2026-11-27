@@ -74,8 +74,10 @@ jobs:
           python3 scripts/compute_update_manifest.py \
             --build-id "$SHORT_SHA" \
             --publish-dir release \
-            --ios-ipa release/vibehelper-client-ios.ipa
-          ls -lh release/vibehelper-client-ios.ipa release/manifest.json
+            --ios-ipa release/vibehelper-client-ios.ipa \
+            --altstore-out release/altstore-source.json \
+            --altstore-download-url "https://github.com/${{ github.repository }}/releases/download/ci-latest/vibehelper-client-ios.ipa"
+          ls -lh release/vibehelper-client-ios.ipa release/manifest.json release/altstore-source.json
 
       - name: Upload IPA Workflow Artifact
         uses: actions/upload-artifact@v4
@@ -84,6 +86,7 @@ jobs:
           path: |
             release/vibehelper-client-ios.ipa
             release/manifest.json
+            release/altstore-source.json
           retention-days: 30
 
       - name: Publish IPA to ci-latest Release
@@ -100,5 +103,6 @@ jobs:
           gh release upload ci-latest \
             release/vibehelper-client-ios.ipa \
             release/manifest.json \
+            release/altstore-source.json \
             --repo "${{ github.repository }}" \
             --clobber
