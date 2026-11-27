@@ -538,6 +538,8 @@ void openModelPickerSheet(
       ? initialCleaned
       : List<String>.from(fallbackModels);
   var currentActive = cleanModelDisplay(activeModel);
+  var currentPermMode = '';
+  var permissionModes = const <({String id, String label, String zh})>[];
   var loadingLive = true;
   var initialized = false;
   var liveSource = '';
@@ -578,6 +580,12 @@ void openModelPickerSheet(
             if (fetchedActive.isNotEmpty) {
               currentActive = fetchedActive;
             }
+            if (res.activePermissionMode.isNotEmpty) {
+              currentPermMode = res.activePermissionMode;
+            }
+            if (res.permissionModes.isNotEmpty) {
+              permissionModes = res.permissionModes;
+            }
           });
         }
 
@@ -598,6 +606,28 @@ void openModelPickerSheet(
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('已向被控端发送模型切换指令: $targetModel'),
+              duration: const Duration(milliseconds: 1400),
+            ),
+          );
+        }
+
+        void selectPermissionMode(String modeId, String displayLabel) {
+          HapticFeedback.mediumImpact();
+          setSheetState(() {
+            currentPermMode = modeId;
+          });
+          actions.sendControlKey(
+            key: 'vh:select_mode:$modeId',
+            targetWindowId: targetWindowId,
+          );
+          Future<void>.delayed(const Duration(milliseconds: 900), () {
+            if (ctx.mounted) {
+              unawaited(refreshModels());
+            }
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已切换 Agent 权限模式: $displayLabel'),
               duration: const Duration(milliseconds: 1400),
             ),
           );
@@ -805,67 +835,147 @@ void openModelPickerSheet(
                       icon: const Icon(Icons.data_usage_rounded, size: 14),
                       label: const Text('额度查询', style: TextStyle(fontSize: 12)),
                     ),
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.of(ctx).pop();
-                        HapticFeedback.lightImpact();
-                        actions.sendControlKey(
-                          key: 'vh:model_menu',
-                          targetWindowId: targetWindowId,
-                        );
-                      },
-                      icon: const Icon(Icons.open_in_new_rounded, size: 14),
-                      label: const Text('远端菜单', style: TextStyle(fontSize: 12)),
-                    ),
                   ],
                 ),
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Text(
                     loadingLive
-                        ? '正在从 IDE 实时读取模型、Orchestrator 子项与 Thinking 强度...'
+                        ? '正在从远端实时读取模型、档位与权限状态...'
                         : (liveSource == 'cdp_live'
-                            ? '已同步 IDE 实时模型列表 (${models.length} 个档位)'
+                            ? '已同步远端实时模型列表 (${models.length} 个档位)'
                             : '当前显示可用模型与强度档位 (${models.length} 项)'),
                     style: TextStyle(fontSize: 11, color: p.muted),
                   ),
                 ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {
-                          Navigator.of(ctx).pop();
-                          HapticFeedback.lightImpact();
-                          actions.sendControlKey(
-                            key: 'vh:model_menu',
-                            targetWindowId: targetWindowId,
-                          );
-                        },
-                        icon: const Icon(Icons.smart_toy_outlined, size: 15),
-                        label:
-                            const Text('点击远端模型框', style: TextStyle(fontSize: 12)),
-                      ),
+                if (permissionModes.isNotEmpty) ...[
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
+                    decoration: BoxDecoration(
+                      color: p.panel,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: p.border),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: () {
-                          Navigator.of(ctx).pop();
-                          HapticFeedback.lightImpact();
-                          actions.sendControlKey(
-                            key: 'vh:mode_menu',
-                            targetWindowId: targetWindowId,
-                          );
-                        },
-                        icon: const Icon(Icons.bolt_rounded, size: 15),
-                        label: const Text('切换 Turbo/权限',
-                            style: TextStyle(fontSize: 12)),
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.shield_outlined,
+                              size: 14,
+                              color: p.accent,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Agent 权限模式',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: p.text,
+                              ),
+                            ),
+                            const Spacer(),
+                            if (currentPermMode.isNotEmpty)
+                              Text(
+                                currentPermMode.toUpperCase(),
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: p.accent,
+                                ),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 7),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            for (final mode in permissionModes)
+                              Builder(
+                                builder: (_) {
+                                  final selected =
+                                      currentPermMode.toLowerCase() ==
+                                          mode.id.toLowerCase();
+                                  final isTurbo =
+                                      mode.id.toLowerCase() == 'turbo';
+                                  final activeColor = isTurbo
+                                      ? const Color(0xFFD97706)
+                                      : p.accent;
+                                  return InkWell(
+                                    borderRadius: BorderRadius.circular(9),
+                                    onTap: () => selectPermissionMode(
+                                      mode.id,
+                                      '${mode.label} (${mode.zh})',
+                                    ),
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 9,
+                                        vertical: 6,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: selected
+                                            ? activeColor.withValues(
+                                                alpha: 0.14)
+                                            : p.bg,
+                                        borderRadius: BorderRadius.circular(9),
+                                        border: Border.all(
+                                          color: selected
+                                              ? activeColor
+                                              : p.border,
+                                          width: selected ? 1.3 : 1,
+                                        ),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (isTurbo) ...[
+                                            Icon(
+                                              Icons.bolt_rounded,
+                                              size: 13,
+                                              color: selected
+                                                  ? activeColor
+                                                  : p.muted,
+                                            ),
+                                            const SizedBox(width: 3),
+                                          ],
+                                          Text(
+                                            mode.label,
+                                            style: TextStyle(
+                                              fontSize: 11.5,
+                                              fontWeight: selected
+                                                  ? FontWeight.w700
+                                                  : FontWeight.w600,
+                                              color: selected
+                                                  ? activeColor
+                                                  : p.text,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            mode.zh,
+                                            style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: selected
+                                                  ? activeColor
+                                                  : p.muted,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-                const SizedBox(height: 10),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                const SizedBox(height: 2),
                 ConstrainedBox(
                   constraints: BoxConstraints(
                     maxHeight: MediaQuery.of(ctx).size.height * 0.56,

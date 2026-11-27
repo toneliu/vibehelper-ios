@@ -871,8 +871,14 @@ class HostActionController {
     }
   }
 
-  Future<({String activeModel, List<String> models, String source})>
-      fetchHostModels({String? windowId}) async {
+  Future<
+      ({
+        String activeModel,
+        List<String> models,
+        String source,
+        String activePermissionMode,
+        List<({String id, String label, String zh})> permissionModes,
+      })> fetchHostModels({String? windowId}) async {
     final settings = _ref.read(settingsProvider);
     final query = <String, String>{
       if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
@@ -881,7 +887,13 @@ class HostActionController {
     };
     final uri = _buildHostHttpUri(settings.wsUrl, '/api/host/models', query);
     if (uri == null) {
-      return (activeModel: '', models: const <String>[], source: '');
+      return (
+        activeModel: '',
+        models: const <String>[],
+        source: '',
+        activePermissionMode: '',
+        permissionModes: const <({String id, String label, String zh})>[],
+      );
     }
     final httpClient = HttpClient()
       ..connectionTimeout = const Duration(seconds: 4);
@@ -901,17 +913,38 @@ class HostActionController {
                 .where((e) => e.isNotEmpty)
                 .toList()
             : const <String>[];
+        final rawPerms = data['permission_modes'];
+        final permissionModes = <({String id, String label, String zh})>[];
+        if (rawPerms is List) {
+          for (final item in rawPerms) {
+            if (item is! Map) continue;
+            final id = (item['id'] as String?)?.trim() ?? '';
+            if (id.isEmpty) continue;
+            final label = (item['label'] as String?)?.trim() ?? id;
+            final zh = (item['zh'] as String?)?.trim() ?? label;
+            permissionModes.add((id: id, label: label, zh: zh));
+          }
+        }
         return (
           activeModel: (data['active_model'] as String?)?.trim() ?? '',
           models: models,
           source: (data['model_source'] as String?)?.trim() ?? '',
+          activePermissionMode:
+              (data['active_permission_mode'] as String?)?.trim() ?? '',
+          permissionModes: permissionModes,
         );
       }
     } catch (_) {
     } finally {
       httpClient.close(force: true);
     }
-    return (activeModel: '', models: const <String>[], source: '');
+    return (
+      activeModel: '',
+      models: const <String>[],
+      source: '',
+      activePermissionMode: '',
+      permissionModes: const <({String id, String label, String zh})>[],
+    );
   }
 
   Future<ProjectListResponse?> fetchProjects() async {
