@@ -23,6 +23,7 @@ import '../terminal/remote_terminal_view.dart';
 import '../update/update_controller.dart';
 import '../windows/window_controller.dart';
 import '../windows/window_selector_panel.dart';
+import 'access_log_sheet.dart';
 
 /// LingGuang-inspired minimalist 5-tab Android Vibe Coding console.
 ///
@@ -4082,6 +4083,74 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
             ),
             const SizedBox(height: 10),
           ],
+
+          // Security & Audit Log Card
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () {
+              final active = settings.activeHost;
+              final base = httpBaseFromWsUrl(active.wsUrl);
+              if (base == null) {
+                _showTopNotice('当前主机地址无效，无法读取访问日志', isError: true);
+                return;
+              }
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => AccessLogPage(
+                    hostHttpBase: base,
+                    hostToken: active.token,
+                    hostName: active.name.trim().isNotEmpty
+                        ? active.name.trim()
+                        : inferHostLabel(active.wsUrl),
+                  ),
+                ),
+              );
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: p.panel,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: p.border),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: p.accent.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.policy_rounded,
+                        size: 20, color: p.accent),
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'IP 访问与终端审计日志',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                            color: p.text,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '查看所有连接过宿主机的 IP、语音/注入、终端命令与异常访问',
+                          style: TextStyle(fontSize: 11.5, color: p.muted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, color: p.muted),
+                ],
+              ),
+            ),
+          ),
 
           const SizedBox(height: 10),
 
