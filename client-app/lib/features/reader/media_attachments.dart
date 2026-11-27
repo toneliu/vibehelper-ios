@@ -15,6 +15,8 @@ import 'package:video_player/video_player.dart';
 
 import '../../core/theme.dart';
 import '../../protocol/messages.dart';
+import 'code_highlighter.dart';
+import 'native_chat_view.dart';
 
 /// Resolve a host-relative media URL (`/api/media?path=...`) to an absolute URL
 /// carrying the host token.
@@ -847,6 +849,8 @@ class _TextFilePreviewPageState extends State<TextFilePreviewPage> {
   String? _text;
   String? _error;
   bool _truncated = false;
+  bool _renderMarkdown = true;
+  bool _wrapLines = false;
 
   @override
   void initState() {
@@ -887,8 +891,14 @@ class _TextFilePreviewPageState extends State<TextFilePreviewPage> {
   @override
   Widget build(BuildContext context) {
     final p = VibeTheme.paletteOf(context);
+    final ext = _extOf(widget.attachment.displayName);
+    final isMd = isMarkdownExt(ext);
+    final showRenderedMd = isMd && _renderMarkdown;
+    final showHighlightedCode = !showRenderedMd && isCodeHighlightExt(ext);
+    final pageBg = (showHighlightedCode && _text != null) ? p.codeBg : p.bg;
+
     return Scaffold(
-      backgroundColor: p.bg,
+      backgroundColor: pageBg,
       appBar: AppBar(
         backgroundColor: p.panel,
         foregroundColor: p.text,
@@ -897,6 +907,24 @@ class _TextFilePreviewPageState extends State<TextFilePreviewPage> {
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontSize: 15)),
         actions: [
+          if (isMd && _text != null)
+            IconButton(
+              tooltip: showRenderedMd ? '查看源码' : '渲染预览',
+              icon: Icon(showRenderedMd
+                  ? Icons.code_rounded
+                  : Icons.article_rounded),
+              onPressed: () =>
+                  setState(() => _renderMarkdown = !_renderMarkdown),
+            ),
+          if (!showRenderedMd && _text != null)
+            IconButton(
+              tooltip: _wrapLines ? '横向滚动' : '自动换行',
+              icon: Icon(
+                Icons.wrap_text_rounded,
+                color: _wrapLines ? p.accent : null,
+              ),
+              onPressed: () => setState(() => _wrapLines = !_wrapLines),
+            ),
           if (_text != null)
             IconButton(
               tooltip: '复制全部',
@@ -931,26 +959,105 @@ class _TextFilePreviewPageState extends State<TextFilePreviewPage> {
                             style: TextStyle(fontSize: 12, color: p.text)),
                       ),
                     Expanded(
-                      child: Scrollbar(
-                        child: SingleChildScrollView(
-                          padding: const EdgeInsets.all(12),
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: SelectableText(
-                              _text!,
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 12,
-                                height: 1.45,
-                                color: p.codeText,
+                      child: showRenderedMd
+                          ? Scrollbar(
+                              child: SingleChildScrollView(
+                                padding: const EdgeInsets.all(16),
+                                child: SelectionArea(
+                                  child: VibeMarkdownView(
+                                    data: _text!,
+                                    baseColor: p.text,
+                                    baseFontSize: 14.5,
+                                  ),
+                                ),
                               ),
-                            ),
-                          ),
-                        ),
-                      ),
+                            )
+                          : showHighlightedCode
+                              ? _buildCodeViewer(ext)
+                              : _buildPlainTextViewer(p),
                     ),
                   ],
                 ),
+    );
+  }
+
+  Widget _buildCodeViewer(String ext) {
+    final normalized = _text!.replaceAll('\r\n', '\n');
+    final span = buildHighlightedCodeSpan(normalized, ext, fontSize: 12.5);
+    if (_wrapLines) {
+      return Scrollbar(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(12),
+          child: SelectableText.rich(span),
+        ),
+      );
+    }
+
+    final lineCount = '\n'.allMatches(normalized).length + 1;
+    final gutterWidth = (lineCount.toString().length * 8.5 + 14).clamp(30.0, 64.0);
+    final gutterText = List<int>.generate(lineCount, (i) => i + 1).join('\n');
+
+    return Scrollbar(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: gutterWidth,
+              padding: const EdgeInsets.only(left: 8, right: 8),
+              decoration: const BoxDecoration(
+                border: Border(
+                  right: BorderSide(color: Color(0xFF1F2937), width: 1),
+                ),
+              ),
+              child: Text(
+                gutterText,
+                textAlign: TextAlign.right,
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12.5,
+                  height: 1.5,
+                  color: Color(0xFF64748B),
+                ),
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: SelectableText.rich(span),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlainTextViewer(VibePalette p) {
+    final style = TextStyle(
+      fontFamily: 'monospace',
+      fontSize: 12.5,
+      height: 1.5,
+      color: p.text,
+    );
+    if (_wrapLines) {
+      return Scrollbar(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(14),
+          child: SelectableText(_text!, style: style),
+        ),
+      );
+    }
+    return Scrollbar(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(14),
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SelectableText(_text!, style: style),
+        ),
+      ),
     );
   }
 }

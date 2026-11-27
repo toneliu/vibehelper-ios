@@ -1,4 +1,6 @@
+import 'package:flutter/painting.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vibehelper_client/features/reader/code_highlighter.dart';
 import 'package:vibehelper_client/features/reader/media_attachments.dart';
 import 'package:vibehelper_client/protocol/messages.dart';
 
@@ -72,6 +74,37 @@ void main() {
       final parsedDl = Uri.parse(downloadUrl);
       expect(parsedDl.queryParameters['token'], 'tok123');
       expect(parsedDl.queryParameters['download'], '1');
+    });
+  });
+
+  group('Code highlighter & preview extension helpers', () {
+    test('highlights Python code while preserving source text verbatim', () {
+      const src = '"""Docstring"""\n'
+          '# comment\n'
+          '@decorator\n'
+          'def greet(name: Path) -> str:\n'
+          '    return "hello"\n';
+      final span = buildHighlightedCodeSpan(src, 'py');
+      expect(span.toPlainText(), src);
+      final styledColors = span.children!
+          .whereType<TextSpan>()
+          .map((s) => s.style?.color)
+          .whereType<Color>()
+          .toSet();
+      expect(styledColors.length, greaterThanOrEqualTo(4));
+    });
+
+    test('highlights JSON keys, numbers, and booleans verbatim', () {
+      const jsonSrc = '{\n  "version": "0.7.0",\n  "count": 42,\n  "ok": true\n}\n';
+      final span = buildHighlightedCodeSpan(jsonSrc, 'json');
+      expect(span.toPlainText(), jsonSrc);
+      final keySpan = span.children!
+          .whereType<TextSpan>()
+          .firstWhere((s) => s.text == '"version"');
+      expect(keySpan.style?.color, isNotNull);
+      expect(isMarkdownExt('MD'), isTrue);
+      expect(isCodeHighlightExt('py'), isTrue);
+      expect(isCodeHighlightExt('log'), isFalse);
     });
   });
 }
