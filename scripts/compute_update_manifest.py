@@ -109,6 +109,11 @@ def compute_metadata(repo_root: pathlib.Path, *, build_id: str | None = None) ->
     }
 
 
+DEFAULT_ALTSTORE_ICON_URL = (
+    "https://raw.githubusercontent.com/toneliu/vibehelper-ios/main/client-app/assets/android_icons/app_icon_512.png"
+)
+
+
 def build_github_altstore_source(
     *,
     meta: dict[str, Any],
@@ -127,6 +132,7 @@ def build_github_altstore_source(
     desc = (changelog or "").strip() or (
         f"VibeHelper iOS v{ver} ({build_id or build_num}) · 支持后台灵动岛像素宠物动画与语音协同"
     )
+    effective_icon = (icon_url or "").strip() or DEFAULT_ALTSTORE_ICON_URL
     clean_dl = download_url.strip()
     version_entry: dict[str, Any] = {
         "version": ver,
@@ -146,8 +152,10 @@ def build_github_altstore_source(
             "通过 GitHub Releases (HTTPS) 自动分发 VibeHelper iOS IPA，"
             "兼容 AltStore / SideStore，一键保活灵动岛与远程控制 AI IDE。"
         ),
+        "iconURL": effective_icon,
         "tintColor": "#4F46E5",
         "category": "developer",
+        "screenshotURLs": [],
         "versions": [version_entry] if clean_dl else [],
         "appPermissions": {
             "entitlements": [],
@@ -158,12 +166,11 @@ def build_github_altstore_source(
             },
         },
     }
-    if icon_url.strip():
-        app_entry["iconURL"] = icon_url.strip()
     return {
         "name": "VibeHelper (GitHub)",
         "identifier": "com.vibehelper.github.source",
         "subtitle": "VibeHelper iOS 自动构建更新源 (GitHub Releases HTTPS)",
+        "iconURL": effective_icon,
         "tintColor": "#4F46E5",
         "apps": [app_entry],
         "news": [],
@@ -188,7 +195,7 @@ def main() -> int:
     parser.add_argument("--altstore-out", type=pathlib.Path, default=None)
     parser.add_argument("--altstore-download-url", default="")
     parser.add_argument("--bundle-id", default="com.example.vibehelperClient")
-    parser.add_argument("--icon-url", default="")
+    parser.add_argument("--icon-url", default=DEFAULT_ALTSTORE_ICON_URL)
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()

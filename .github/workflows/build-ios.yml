@@ -76,7 +76,8 @@ jobs:
             --publish-dir release \
             --ios-ipa release/vibehelper-client-ios.ipa \
             --altstore-out release/altstore-source.json \
-            --altstore-download-url "https://github.com/${{ github.repository }}/releases/download/ci-latest/vibehelper-client-ios.ipa"
+            --altstore-download-url "https://github.com/${{ github.repository }}/releases/download/ci-latest/vibehelper-client-ios.ipa" \
+            --icon-url "https://raw.githubusercontent.com/${{ github.repository }}/main/client-app/assets/android_icons/app_icon_512.png"
           ls -lh release/vibehelper-client-ios.ipa release/manifest.json release/altstore-source.json
 
       - name: Upload IPA Workflow Artifact
