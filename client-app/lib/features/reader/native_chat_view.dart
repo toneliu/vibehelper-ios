@@ -1279,13 +1279,13 @@ class NativeChatView extends ConsumerWidget {
                 _actionIconBtn(
                   p: p,
                   icon: Icons.stop_circle_outlined,
-                  tooltip: '停止生成 (Esc)',
+                  tooltip: '停止生成',
                   color: p.warning,
                   onTap: connected
                       ? () {
                           HapticFeedback.lightImpact();
                           actions.sendControlKey(
-                            key: 'Escape',
+                            key: 'vh:interrupt',
                             targetWindowId: targetWindowId,
                           );
                         }
@@ -1657,7 +1657,10 @@ class NativeChatView extends ConsumerWidget {
               ],
             ),
           )
-        else if (connected && content != null && content.agentStatus == 'working')
+        else if (!compactHeader &&
+            connected &&
+            content != null &&
+            content.agentStatus == 'working')
           Container(
             margin: const EdgeInsets.only(top: 6),
             padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
@@ -1692,7 +1695,7 @@ class NativeChatView extends ConsumerWidget {
                   onTap: () {
                     HapticFeedback.lightImpact();
                     actions.sendControlKey(
-                      key: 'Escape',
+                      key: 'vh:interrupt',
                       targetWindowId: targetWindowId,
                     );
                   },

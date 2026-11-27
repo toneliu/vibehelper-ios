@@ -2603,26 +2603,42 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
         // Fixed Collapsible Queued Messages Bar (above bottom composer)
         if (effectiveQueue.isNotEmpty) _buildQueuePanel(p, effectiveQueue),
 
-        // Interrupt / Stop & Re-Edit Quick Bar when Agent is working
-        if (connected && content?.agentStatus == 'working')
-          Padding(
+        // Live Agent status strip when working (sole Stop button lives in composer)
+        if (connected && content != null && content.agentStatus == 'working')
+          Container(
             key: const ValueKey('vh_interrupt_bar'),
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+            margin: const EdgeInsets.fromLTRB(16, 2, 16, 4),
+            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+            decoration: BoxDecoration(
+              color: p.accent.withValues(alpha: 0.09),
+              borderRadius: BorderRadius.circular(11),
+              border: Border.all(color: p.accent.withValues(alpha: 0.30)),
+            ),
             child: Row(
               children: [
-                Icon(Icons.bolt_rounded, size: 14, color: p.warning),
-                const SizedBox(width: 5),
-                Expanded(
-                  child: Text(
-                    _inputCtrl.text.trim().isNotEmpty
-                        ? 'Agent 运行中，可直接打断并引导新指令'
-                        : 'Agent 执行中…',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 11.5, color: p.muted),
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.8,
+                    color: p.accent,
                   ),
                 ),
-                if (_inputCtrl.text.trim().isNotEmpty)
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    content.pendingApprovalText.isNotEmpty
+                        ? content.pendingApprovalText
+                        : (_inputCtrl.text.trim().isNotEmpty
+                            ? 'Agent 运行中，可点击右侧打断并发送'
+                            : 'Agent 正在思考与执行…'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: p.accent),
+                  ),
+                ),
+                if (_inputCtrl.text.trim().isNotEmpty) ...[
+                  const SizedBox(width: 8),
                   InkWell(
                     borderRadius: BorderRadius.circular(8),
                     onTap: () => unawaited(
@@ -2646,54 +2662,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                         ),
                       ),
                     ),
-                  )
-                else
-                  InkWell(
-                    borderRadius: BorderRadius.circular(8),
-                    onTap: () =>
-                        _interruptCurrentAgent(pullLastPromptForEdit: true),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 9, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: p.accent.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(8),
-                        border:
-                            Border.all(color: p.accent.withValues(alpha: 0.5)),
-                      ),
-                      child: Text(
-                        '停止并编辑',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: p.accent,
-                        ),
-                      ),
-                    ),
                   ),
-                const SizedBox(width: 6),
-                InkWell(
-                  borderRadius: BorderRadius.circular(8),
-                  onTap: () => _interruptCurrentAgent(),
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: p.danger.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(8),
-                      border:
-                          Border.all(color: p.danger.withValues(alpha: 0.55)),
-                    ),
-                    child: Text(
-                      '停止',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: p.danger,
-                      ),
-                    ),
-                  ),
-                ),
+                ],
               ],
             ),
           ),
