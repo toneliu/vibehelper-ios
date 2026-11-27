@@ -217,6 +217,8 @@ class OverlayNotifier {
     int yOffsetDp = 6,
     int widthDp = 140,
     bool expanded = false,
+    String? healthUrl,
+    bool keepAlive = false,
   }) async {
     if (!isIslandSupported) return;
     try {
@@ -230,6 +232,8 @@ class OverlayNotifier {
         'yOffsetDp': yOffsetDp,
         'widthDp': widthDp,
         'expanded': expanded,
+        if (healthUrl != null && healthUrl.isNotEmpty) 'healthUrl': healthUrl,
+        'keepAlive': keepAlive,
       });
     } on MissingPluginException {
     } on PlatformException {
@@ -245,6 +249,8 @@ class OverlayNotifier {
     bool autoExpand = true,
     int yOffsetDp = 6,
     int widthDp = 140,
+    String? healthUrl,
+    bool keepAlive = false,
   }) async {
     if (!isIslandSupported) return;
     try {
@@ -257,6 +263,8 @@ class OverlayNotifier {
         'autoExpand': autoExpand,
         'yOffsetDp': yOffsetDp,
         'widthDp': widthDp,
+        if (healthUrl != null && healthUrl.isNotEmpty) 'healthUrl': healthUrl,
+        'keepAlive': keepAlive,
       });
     } on MissingPluginException {
     } on PlatformException {

@@ -62,6 +62,12 @@ if info_plist.exists():
     plist_data["NSSupportsLiveActivitiesFrequentUpdates"] = True
     plist_data["UIFileSharingEnabled"] = True
     plist_data["LSSupportsOpeningDocumentsInPlace"] = True
+    bg_modes = plist_data.get("UIBackgroundModes")
+    if not isinstance(bg_modes, list):
+        bg_modes = []
+    if "audio" not in bg_modes:
+        bg_modes.append("audio")
+    plist_data["UIBackgroundModes"] = bg_modes
     schemes = plist_data.get("LSApplicationQueriesSchemes")
     if not isinstance(schemes, list):
         schemes = []
@@ -139,6 +145,24 @@ final class VibeOverlayBridge: NSObject, UNUserNotificationCenterDelegate {
   private var animFrame: Int = 0
   private var activityAnimStart: Date = Date()
 
+  // Background Live Activity sync state (keeps status updated after leaving the app)
+  private var lifecycleRegistered: Bool = false
+  private var isInBackground: Bool = false
+  private var idleSinceBackgroundDate: Date?
+  private var lastTitle: String = "VibeHelper"
+  private var lastBody: String = ""
+  private var lastStatus: String = "idle"
+  private var lastPetType: String = "shiba"
+  private var lastShowActions: Bool = false
+  private var hostHealthUrl: String = ""
+  private var keepAliveEnabled: Bool = false
+  private var pollTimer: Timer?
+  private var pollInFlight: Bool = false
+  private var bgTaskId: UIBackgroundTaskIdentifier = .invalid
+  private var audioEngine: AVAudioEngine?
+  private var playerNode: AVAudioPlayerNode?
+  private var silentBuffer: AVAudioPCMBuffer?
+
   func attach(registry: FlutterPluginRegistry) {
     if let updaterRegistrar = registry.registrar(forPlugin: "VibeUpdaterBridge") {
       let uch = FlutterMethodChannel(
@@ -194,6 +218,34 @@ final class VibeOverlayBridge: NSObject, UNUserNotificationCenterDelegate {
     center.delegate = self
     registerCategories(center: center)
 
+    if !lifecycleRegistered {
+      lifecycleRegistered = true
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(onWillResignActive),
+        name: UIApplication.willResignActiveNotification,
+        object: nil
+      )
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(onDidEnterBackground),
+        name: UIApplication.didEnterBackgroundNotification,
+        object: nil
+      )
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(onWillEnterForeground),
+        name: UIApplication.willEnterForegroundNotification,
+        object: nil
+      )
+      NotificationCenter.default.addObserver(
+        self,
+        selector: #selector(onDidBecomeActive),
+        name: UIApplication.didBecomeActiveNotification,
+        object: nil
+      )
+    }
+
     ch.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
         result(nil)
@@ -236,22 +288,8 @@ final class VibeOverlayBridge: NSObject, UNUserNotificationCenterDelegate {
         let title = (args?["title"] as? String) ?? "VibeHelper"
         let body = (args?["body"] as? String) ?? ""
         let showActions = (args?["showActions"] as? Bool) ?? false
-
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        if showActions {
-          content.categoryIdentifier = "VIBEHELPER_APPROVAL"
-        }
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.2, repeats: false)
-        let req = UNNotificationRequest(
-          identifier: "vibehelper_\\(id)",
-          content: content,
-          trigger: trigger
-        )
-        UNUserNotificationCenter.current().add(req) { _ in
-          DispatchQueue.main.async { result(true) }
+        self.postLocalNotification(id: id, title: title, body: body, showActions: showActions) {
+          result(true)
         }
       case "cancelSystemNotification":
         let args = call.arguments as? [String: Any]
@@ -262,23 +300,22 @@ final class VibeOverlayBridge: NSObject, UNUserNotificationCenterDelegate {
         center.removeDeliveredNotifications(withIdentifiers: [ident])
         result(true)
       case "showIsland", "updateIsland":
-        #if canImport(ActivityKit)
-        if #available(iOS 16.2, *) {
-          let args = call.arguments as? [String: Any]
-          DispatchQueue.main.async {
-            self.startOrUpdateLiveActivity(args: args)
-          }
+        let args = call.arguments as? [String: Any]
+        DispatchQueue.main.async {
+          self.syncConfigAndUpdateIsland(args: args)
         }
-        #endif
         result(true)
       case "hideIsland":
-        #if canImport(ActivityKit)
-        if #available(iOS 16.2, *) {
-          DispatchQueue.main.async {
+        DispatchQueue.main.async {
+          self.stopBackgroundPoller()
+          self.stopSilentKeepAlive()
+          self.endBgTaskIfNeeded()
+          #if canImport(ActivityKit)
+          if #available(iOS 16.2, *) {
             self.stopLiveActivities()
           }
+          #endif
         }
-        #endif
         result(true)
       case "canDrawOverlays", "isAccessibilityIslandEnabled":
         result(false)
@@ -288,15 +325,303 @@ final class VibeOverlayBridge: NSObject, UNUserNotificationCenterDelegate {
     }
   }
 
+  private func postLocalNotification(
+    id: Int = 1001,
+    title: String,
+    body: String,
+    showActions: Bool,
+    completion: (() -> Void)? = nil
+  ) {
+    let content = UNMutableNotificationContent()
+    content.title = title
+    content.body = body
+    content.sound = .default
+    if showActions {
+      content.categoryIdentifier = "VIBEHELPER_APPROVAL"
+    }
+    let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 0.2, repeats: false)
+    let req = UNNotificationRequest(
+      identifier: "vibehelper_\\(id)",
+      content: content,
+      trigger: trigger
+    )
+    UNUserNotificationCenter.current().add(req) { _ in
+      if let completion = completion {
+        DispatchQueue.main.async { completion() }
+      }
+    }
+  }
+
+  private func syncConfigAndUpdateIsland(args: [String: Any]?) {
+    if let hUrl = args?["healthUrl"] as? String, !hUrl.isEmpty {
+      self.hostHealthUrl = hUrl
+    }
+    if let ka = args?["keepAlive"] as? Bool {
+      self.keepAliveEnabled = ka
+    }
+    let title = (args?["title"] as? String) ?? self.lastTitle
+    let body = (args?["body"] as? String) ?? self.lastBody
+    let status = (args?["status"] as? String) ?? self.lastStatus
+    let showActions = (args?["showActions"] as? Bool) ?? self.lastShowActions
+    let petType = (args?["petType"] as? String) ?? self.lastPetType
+
+    self.lastTitle = title
+    self.lastBody = body
+    self.lastStatus = status
+    self.lastShowActions = showActions
+    self.lastPetType = petType
+    self.idleSinceBackgroundDate = (self.isInBackground && status == "idle") ? (self.idleSinceBackgroundDate ?? Date()) : nil
+
+    #if canImport(ActivityKit)
+    if #available(iOS 16.2, *) {
+      self.startOrUpdateLiveActivity(
+        title: title,
+        body: body,
+        status: status,
+        showActions: showActions,
+        petType: petType
+      )
+    }
+    #endif
+  }
+
+  @objc private func onWillResignActive() {
+    var hasActivity = false
+    #if canImport(ActivityKit)
+    if #available(iOS 16.2, *) {
+      hasActivity = !Activity<VibeIslandAttributes>.activities.isEmpty
+    }
+    #endif
+    // Activate mixable silent audio before OS finishes background transition
+    if hasActivity && (lastStatus == "working" || lastStatus == "waiting_approval" || keepAliveEnabled) {
+      startSilentKeepAlive()
+    }
+  }
+
+  @objc private func onDidEnterBackground() {
+    isInBackground = true
+    idleSinceBackgroundDate = (lastStatus == "idle") ? Date() : nil
+    endBgTaskIfNeeded()
+    bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "VibeHelperLiveSync") { [weak self] in
+      self?.endBgTaskIfNeeded()
+    }
+
+    var hasActivity = false
+    #if canImport(ActivityKit)
+    if #available(iOS 16.2, *) {
+      hasActivity = !Activity<VibeIslandAttributes>.activities.isEmpty
+    }
+    #endif
+    if hasActivity && (lastStatus == "working" || lastStatus == "waiting_approval" || keepAliveEnabled) {
+      startSilentKeepAlive()
+    }
+    if hasActivity && !hostHealthUrl.isEmpty {
+      startBackgroundPoller()
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        self?.pollHostHealthOnce()
+      }
+    }
+  }
+
+  @objc private func onWillEnterForeground() {
+    isInBackground = false
+    idleSinceBackgroundDate = nil
+    stopBackgroundPoller()
+    stopSilentKeepAlive()
+    endBgTaskIfNeeded()
+  }
+
+  @objc private func onDidBecomeActive() {
+    isInBackground = false
+    idleSinceBackgroundDate = nil
+    stopBackgroundPoller()
+    stopSilentKeepAlive()
+    endBgTaskIfNeeded()
+  }
+
+  private func endBgTaskIfNeeded() {
+    if bgTaskId != .invalid {
+      UIApplication.shared.endBackgroundTask(bgTaskId)
+      bgTaskId = .invalid
+    }
+  }
+
+  private func startSilentKeepAlive() {
+    if let engine = audioEngine, engine.isRunning {
+      return
+    }
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      try session.setActive(true)
+
+      let engine = AVAudioEngine()
+      let player = AVAudioPlayerNode()
+      guard let format = AVAudioFormat(standardFormatWithSampleRate: 8000, channels: 1) else {
+        return
+      }
+      let frameCount: AVAudioFrameCount = 8000
+      guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+        return
+      }
+      buffer.frameLength = frameCount
+      if let channelData = buffer.floatChannelData {
+        channelData[0].initialize(repeating: 0.0, count: Int(frameCount))
+      }
+      engine.attach(player)
+      engine.connect(player, to: engine.mainMixerNode, format: format)
+      engine.mainMixerNode.outputVolume = 0.0
+      try engine.start()
+      player.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
+      player.play()
+      self.audioEngine = engine
+      self.playerNode = player
+      self.silentBuffer = buffer
+    } catch {
+      // OS may decline background audio session activation when started strictly in background
+    }
+  }
+
+  private func stopSilentKeepAlive() {
+    playerNode?.stop()
+    audioEngine?.stop()
+    audioEngine?.reset()
+    playerNode = nil
+    audioEngine = nil
+    silentBuffer = nil
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+  }
+
+  private func startBackgroundPoller() {
+    stopBackgroundPoller()
+    let t = Timer(timeInterval: 4.0, repeats: true) { [weak self] _ in
+      self?.pollHostHealthOnce()
+    }
+    RunLoop.main.add(t, forMode: .common)
+    pollTimer = t
+  }
+
+  private func stopBackgroundPoller() {
+    pollTimer?.invalidate()
+    pollTimer = nil
+  }
+
+  private func pollHostHealthOnce() {
+    guard isInBackground, !hostHealthUrl.isEmpty, !pollInFlight,
+          let url = URL(string: hostHealthUrl) else {
+      return
+    }
+    if lastStatus == "idle" && !keepAliveEnabled {
+      if let idleStart = idleSinceBackgroundDate,
+         Date().timeIntervalSince(idleStart) > 90.0 {
+        stopBackgroundPoller()
+        stopSilentKeepAlive()
+        endBgTaskIfNeeded()
+        return
+      }
+    }
+
+    pollInFlight = true
+    var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 4.0)
+    req.httpMethod = "GET"
+
+    URLSession.shared.dataTask(with: req) { [weak self] data, _, _ in
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        self.pollInFlight = false
+        guard self.isInBackground, let data = data,
+              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+          return
+        }
+        let nextStatus = (json["agent_status"] as? String) ?? ""
+        guard !nextStatus.isEmpty else { return }
+        let approvalText = ((json["pending_approval_text"] as? String) ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sessionTitle = ((json["active_session_title"] as? String) ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let nextBody: String
+        if nextStatus == "waiting_approval" {
+          nextBody = approvalText.isEmpty ? "Agent 请求授权操作" : approvalText
+        } else if nextStatus == "working" {
+          if !approvalText.isEmpty {
+            nextBody = approvalText
+          } else if !sessionTitle.isEmpty {
+            nextBody = sessionTitle
+          } else {
+            nextBody = "Agent 正在执行中..."
+          }
+        } else {
+          nextBody = sessionTitle.isEmpty ? "当前空闲" : "已完成 · \\(sessionTitle)"
+        }
+
+        let prevStatus = self.lastStatus
+        let prevBody = self.lastBody
+        let nextShowActions = (nextStatus == "waiting_approval")
+
+        if nextStatus == "idle" {
+          if self.idleSinceBackgroundDate == nil {
+            self.idleSinceBackgroundDate = Date()
+          }
+        } else {
+          self.idleSinceBackgroundDate = nil
+          if !self.keepAliveEnabled {
+            self.startSilentKeepAlive()
+          }
+        }
+
+        if nextStatus != prevStatus || nextBody != prevBody {
+          self.lastStatus = nextStatus
+          self.lastBody = nextBody
+          self.lastShowActions = nextShowActions
+          #if canImport(ActivityKit)
+          if #available(iOS 16.2, *) {
+            self.startOrUpdateLiveActivity(
+              title: self.lastTitle,
+              body: nextBody,
+              status: nextStatus,
+              showActions: nextShowActions,
+              petType: self.lastPetType
+            )
+          }
+          #endif
+
+          if prevStatus == "working" && nextStatus == "idle" {
+            self.postLocalNotification(
+              title: "Agent 已完成回复",
+              body: nextBody,
+              showActions: false
+            )
+          } else if nextStatus == "waiting_approval" && prevStatus != "waiting_approval" {
+            self.postLocalNotification(
+              title: "Agent 请求授权",
+              body: nextBody,
+              showActions: true
+            )
+          }
+        }
+
+        if nextStatus == "idle" && !self.keepAliveEnabled,
+           let idleStart = self.idleSinceBackgroundDate,
+           Date().timeIntervalSince(idleStart) > 90.0 {
+          self.stopBackgroundPoller()
+          self.stopSilentKeepAlive()
+          self.endBgTaskIfNeeded()
+        }
+      }
+    }.resume()
+  }
+
   #if canImport(ActivityKit)
   @available(iOS 16.2, *)
-  private func startOrUpdateLiveActivity(args: [String: Any]?) {
+  private func startOrUpdateLiveActivity(
+    title: String,
+    body: String,
+    status: String,
+    showActions: Bool,
+    petType: String
+  ) {
     guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-    let title = (args?["title"] as? String) ?? "VibeHelper"
-    let body = (args?["body"] as? String) ?? ""
-    let status = (args?["status"] as? String) ?? "idle"
-    let showActions = (args?["showActions"] as? Bool) ?? false
-    let petType = (args?["petType"] as? String) ?? "shiba"
     animFrame = (animFrame + 1) % 16
 
     let state = VibeIslandAttributes.ContentState(
@@ -319,6 +644,7 @@ final class VibeOverlayBridge: NSObject, UNUserNotificationCenterDelegate {
       return
     }
 
+    guard !isInBackground else { return }
     activityAnimStart = Date()
     let freshState = VibeIslandAttributes.ContentState(
       status: status,
@@ -415,6 +741,8 @@ final class VibeOverlayBridge: NSObject, UNUserNotificationCenterDelegate {
 
 if app_delegate.exists():
     swift = app_delegate.read_text(encoding="utf-8")
+    if "import AVFoundation" not in swift:
+        swift = "import AVFoundation\n" + swift
     if "import UserNotifications" not in swift:
         swift = "import UserNotifications\n" + swift
     if "canImport(ActivityKit)" not in swift:

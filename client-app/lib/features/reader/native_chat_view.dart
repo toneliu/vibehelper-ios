@@ -355,7 +355,126 @@ String cleanModelDisplay(String raw) {
   return s.trim();
 }
 
-/// Opens the remote AI model & Turbo/permission mode picker sheet.
+class _ModelEffortOption {
+  const _ModelEffortOption({
+    required this.effortLabel,
+    required this.fullValue,
+  });
+
+  final String effortLabel;
+  final String fullValue;
+}
+
+class _ModelGroupEntry {
+  const _ModelGroupEntry({
+    required this.baseName,
+    required this.options,
+  });
+
+  final String baseName;
+  final List<_ModelEffortOption> options;
+}
+
+({String baseName, String effortLabel}) _splitModelEffortLabel(String raw) {
+  final trimmed = raw.trim();
+  final match = RegExp(
+    r'\s+(extra\s*high|xhigh|high|medium|low|thinking)$',
+    caseSensitive: false,
+  ).firstMatch(trimmed);
+  if (match == null) {
+    return (baseName: trimmed, effortLabel: '');
+  }
+  final rawEff = (match.group(1) ?? '').trim().toLowerCase();
+  final eff = switch (rawEff) {
+    'extra high' || 'xhigh' => 'Extra High',
+    'high' => 'High',
+    'medium' => 'Medium',
+    'low' => 'Low',
+    'thinking' => 'Thinking',
+    _ => (match.group(1) ?? '').trim(),
+  };
+  final base = trimmed.substring(0, match.start).trim();
+  return (
+    baseName: base.isNotEmpty ? base : trimmed,
+    effortLabel: eff,
+  );
+}
+
+({
+  List<_ModelGroupEntry> orchestrator,
+  List<_ModelGroupEntry> standard,
+  bool hasBareOrchestrator,
+}) _parseModelGroups(List<String> models) {
+  final orchMap = <String, List<_ModelEffortOption>>{};
+  final stdMap = <String, List<_ModelEffortOption>>{};
+  bool hasBareOrch = false;
+
+  final orchRe = RegExp(
+    r'^orchestrator(?:\s*[·:\-/|]\s*(.+))?$',
+    caseSensitive: false,
+  );
+
+  for (final raw in models) {
+    final clean = raw.trim();
+    if (clean.isEmpty) continue;
+    final orchMatch = orchRe.firstMatch(clean);
+    if (orchMatch != null) {
+      final subSpec = (orchMatch.group(1) ?? '').trim();
+      if (subSpec.isEmpty) {
+        hasBareOrch = true;
+        continue;
+      }
+      final split = _splitModelEffortLabel(subSpec);
+      final list = orchMap.putIfAbsent(split.baseName, () => []);
+      if (!list.any(
+          (o) => o.fullValue.toLowerCase() == clean.toLowerCase())) {
+        list.add(_ModelEffortOption(
+          effortLabel: split.effortLabel,
+          fullValue: clean,
+        ));
+      }
+      continue;
+    }
+
+    final split = _splitModelEffortLabel(clean);
+    final list = stdMap.putIfAbsent(split.baseName, () => []);
+    if (!list.any((o) => o.fullValue.toLowerCase() == clean.toLowerCase())) {
+      list.add(_ModelEffortOption(
+        effortLabel: split.effortLabel,
+        fullValue: clean,
+      ));
+    }
+  }
+
+  return (
+    orchestrator: orchMap.entries
+        .map((e) => _ModelGroupEntry(baseName: e.key, options: e.value))
+        .toList(),
+    standard: stdMap.entries
+        .map((e) => _ModelGroupEntry(baseName: e.key, options: e.value))
+        .toList(),
+    hasBareOrchestrator: hasBareOrch,
+  );
+}
+
+String _shortEffortChipLabel(String effortLabel) {
+  return switch (effortLabel.toLowerCase()) {
+    'low' => '低 Low',
+    'medium' => '中 Med',
+    'high' => '高 High',
+    'extra high' => '极高 XHigh',
+    'thinking' => '深度',
+    _ => effortLabel,
+  };
+}
+
+String _normModelCmp(String value) => value
+    .toLowerCase()
+    .replaceAll('·', ' ')
+    .replaceAll(RegExp(r'\s+'), ' ')
+    .trim();
+
+/// Opens the remote AI model, Orchestrator sub-model, and Thinking effort picker sheet.
 void openModelPickerSheet(
   BuildContext context,
   WidgetRef ref,
@@ -366,21 +485,43 @@ void openModelPickerSheet(
   final actions = ref.read(hostActionProvider);
   final p = VibeTheme.paletteOf(context);
   const fallbackModels = <String>[
-    'Gemini 4 Hydrogen Extra High',
-    'Gemini 4 Hydrogen High',
-    'Gemini 4 Hydrogen Medium',
-    'Gemini 4 Hydrogen Low',
-    'Gemini 4 Neon Extra High',
-    'Gemini 4 Neon High',
+    'Gemini 4 Neon Low',
     'Gemini 4 Neon Medium',
+    'Gemini 4 Neon High',
+    'Gemini 4 Neon Extra High',
+    'Gemini 4 Carbon Low',
     'Gemini 4 Carbon Medium',
-    'Gemini 4 Argon High',
+    'Gemini 4 Carbon High',
+    'Gemini 4 Argon Low',
     'Gemini 4 Argon Medium',
+    'Gemini 4 Argon High',
+    'Gemini 4 Hydrogen Low',
+    'Gemini 4 Hydrogen Medium',
+    'Gemini 4 Hydrogen High',
+    'Gemini 4 Hydrogen Extra High',
+    'Gemini 3.8 Flash Low',
     'Gemini 3.8 Flash Medium',
+    'Gemini 3.8 Flash High',
+    'Claude Opus 5.5 Low',
+    'Claude Opus 5.5 Medium',
     'Claude Opus 5.5 High',
+    'Claude Sonnet 5.5 Low',
     'Claude Sonnet 5.5 Medium',
+    'Claude Sonnet 5.5 High',
     'GPT-OSS 120B (Medium)',
-    'Orchestrator',
+    'Orchestrator · Gemini 4 Neon Low',
+    'Orchestrator · Gemini 4 Neon Medium',
+    'Orchestrator · Gemini 4 Neon High',
+    'Orchestrator · Gemini 4 Neon Extra High',
+    'Orchestrator · Gemini 4 Carbon Low',
+    'Orchestrator · Gemini 4 Carbon Medium',
+    'Orchestrator · Gemini 4 Carbon High',
+    'Orchestrator · Gemini 4 Argon Low',
+    'Orchestrator · Gemini 4 Argon Medium',
+    'Orchestrator · Gemini 4 Argon High',
+    'Orchestrator · Claude Opus 5.5 Low',
+    'Orchestrator · Claude Opus 5.5 Medium',
+    'Orchestrator · Claude Opus 5.5 High',
   ];
 
   final initialCleaned = <String>[];
@@ -440,9 +581,179 @@ void openModelPickerSheet(
           });
         }
 
+        void selectTargetModel(String targetModel) {
+          Navigator.of(ctx).pop();
+          HapticFeedback.mediumImpact();
+          actions.sendControlKey(
+            key: 'vh:select_model:$targetModel',
+            targetWindowId: targetWindowId,
+          );
+          for (final ms in const [1100, 2100]) {
+            Future<void>.delayed(Duration(milliseconds: ms), () {
+              unawaited(
+                ref.read(windowContentProvider.notifier).fetchContent(),
+              );
+            });
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已向被控端发送模型切换指令: $targetModel'),
+              duration: const Duration(milliseconds: 1400),
+            ),
+          );
+        }
+
         if (!initialized) {
           initialized = true;
           Future<void>.microtask(refreshModels);
+        }
+
+        final parsed = _parseModelGroups(models);
+        final activeNorm = _normModelCmp(currentActive);
+
+        bool isOptionActive(_ModelEffortOption opt) {
+          if (activeNorm.isEmpty) return false;
+          return activeNorm == _normModelCmp(opt.fullValue);
+        }
+
+        Widget effortPill(_ModelEffortOption opt) {
+          final selected = isOptionActive(opt);
+          final label = opt.effortLabel.isNotEmpty
+              ? _shortEffortChipLabel(opt.effortLabel)
+              : '默认';
+          return InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => selectTargetModel(opt.fullValue),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              decoration: BoxDecoration(
+                color: selected
+                    ? p.accent
+                    : p.panelAlt.withValues(alpha: p.isDark ? 0.9 : 1.0),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: selected ? p.accent : p.border,
+                ),
+              ),
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+                  color: selected ? Colors.white : p.text,
+                ),
+              ),
+            ),
+          );
+        }
+
+        Widget buildGroupCard(
+          _ModelGroupEntry group, {
+          bool insideOrchestrator = false,
+        }) {
+          final hasEfforts = group.options.length > 1 ||
+              group.options.first.effortLabel.isNotEmpty;
+          final groupSelected = group.options.any(isOptionActive);
+
+          if (!hasEfforts && group.options.length == 1) {
+            final single = group.options.first;
+            final selected = isOptionActive(single);
+            return InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => selectTargetModel(single.fullValue),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: selected
+                      ? p.accent.withValues(alpha: 0.14)
+                      : (insideOrchestrator ? p.bg : p.panel),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: selected ? p.accent : p.border,
+                    width: selected ? 1.4 : 1.0,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      insideOrchestrator
+                          ? Icons.subdirectory_arrow_right_rounded
+                          : Icons.auto_awesome_rounded,
+                      size: 16,
+                      color: selected ? p.accent : p.muted,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        group.baseName,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight:
+                              selected ? FontWeight.w700 : FontWeight.w500,
+                          color: p.text,
+                        ),
+                      ),
+                    ),
+                    if (selected)
+                      Icon(Icons.check_circle_rounded,
+                          size: 18, color: p.accent),
+                  ],
+                ),
+              ),
+            );
+          }
+
+          return Container(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+            decoration: BoxDecoration(
+              color: groupSelected
+                  ? p.accent.withValues(alpha: insideOrchestrator ? 0.14 : 0.10)
+                  : (insideOrchestrator ? p.bg : p.panel),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: groupSelected ? p.accent : p.border,
+                width: groupSelected ? 1.4 : 1.0,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      insideOrchestrator
+                          ? Icons.subdirectory_arrow_right_rounded
+                          : Icons.auto_awesome_rounded,
+                      size: 15,
+                      color: groupSelected ? p.accent : p.muted,
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        group.baseName,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight:
+                              groupSelected ? FontWeight.w700 : FontWeight.w600,
+                          color: p.text,
+                        ),
+                      ),
+                    ),
+                    if (groupSelected)
+                      Icon(Icons.check_circle_rounded,
+                          size: 16, color: p.accent),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [for (final opt in group.options) effortPill(opt)],
+                ),
+              ],
+            ),
+          );
         }
 
         return SafeArea(
@@ -458,7 +769,7 @@ void openModelPickerSheet(
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        '模型选择与权限',
+                        '模型与思考强度选择',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -512,10 +823,10 @@ void openModelPickerSheet(
                   padding: const EdgeInsets.only(bottom: 6),
                   child: Text(
                     loadingLive
-                        ? '正在从 IDE 实时读取模型与 Thinking 档位...'
+                        ? '正在从 IDE 实时读取模型、Orchestrator 子项与 Thinking 强度...'
                         : (liveSource == 'cdp_live'
-                            ? '已同步 IDE 实时模型列表 (${models.length} 项)'
-                            : '当前显示可用模型列表 (${models.length} 项)'),
+                            ? '已同步 IDE 实时模型列表 (${models.length} 个档位)'
+                            : '当前显示可用模型与强度档位 (${models.length} 项)'),
                     style: TextStyle(fontSize: 11, color: p.muted),
                   ),
                 ),
@@ -557,89 +868,71 @@ void openModelPickerSheet(
                 const SizedBox(height: 10),
                 ConstrainedBox(
                   constraints: BoxConstraints(
-                    maxHeight: MediaQuery.of(ctx).size.height * 0.48,
+                    maxHeight: MediaQuery.of(ctx).size.height * 0.56,
                   ),
-                  child: ListView.separated(
+                  child: ListView(
                     shrinkWrap: true,
-                    itemCount: models.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 7),
-                    itemBuilder: (_, idx) {
-                      final m = models[idx];
-                      final selected = currentActive.isNotEmpty &&
-                          m.toLowerCase() == currentActive.toLowerCase();
-                      return InkWell(
-                        borderRadius: BorderRadius.circular(12),
-                        onTap: () {
-                          Navigator.of(ctx).pop();
-                          HapticFeedback.mediumImpact();
-                          actions.sendControlKey(
-                            key: 'vh:select_model:$m',
-                            targetWindowId: targetWindowId,
-                          );
-                          Future<void>.delayed(
-                              const Duration(milliseconds: 1100), () {
-                            unawaited(
-                              ref
-                                  .read(windowContentProvider.notifier)
-                                  .fetchContent(),
-                            );
-                          });
-                          Future<void>.delayed(
-                              const Duration(milliseconds: 2100), () {
-                            unawaited(
-                              ref
-                                  .read(windowContentProvider.notifier)
-                                  .fetchContent(),
-                            );
-                          });
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('已向被控端发送模型切换指令: $m'),
-                              duration: const Duration(milliseconds: 1400),
-                            ),
-                          );
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 10),
+                    children: [
+                      if (parsed.orchestrator.isNotEmpty ||
+                          parsed.hasBareOrchestrator) ...[
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(11),
                           decoration: BoxDecoration(
-                            color: selected
-                                ? p.accent.withValues(alpha: 0.14)
-                                : p.panel,
-                            borderRadius: BorderRadius.circular(12),
+                            color: p.accent.withValues(alpha: 0.06),
+                            borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                              color: selected ? p.accent : p.border,
-                              width: selected ? 1.4 : 1.0,
+                              color: p.accent.withValues(alpha: 0.35),
                             ),
                           ),
-                          child: Row(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Icon(
-                                Icons.auto_awesome_rounded,
-                                size: 16,
-                                color: selected ? p.accent : p.muted,
-                              ),
-                              const SizedBox(width: 9),
-                              Expanded(
-                                child: Text(
-                                  m,
-                                  style: TextStyle(
-                                    fontSize: 13.5,
-                                    fontWeight: selected
-                                        ? FontWeight.w700
-                                        : FontWeight.w500,
-                                    color: p.text,
+                              Row(
+                                children: [
+                                  Icon(Icons.hub_rounded,
+                                      size: 17, color: p.accent),
+                                  const SizedBox(width: 7),
+                                  Expanded(
+                                    child: Text(
+                                      'Orchestrator · 智能编排模型',
+                                      style: TextStyle(
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: p.text,
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                  if (parsed.hasBareOrchestrator &&
+                                      parsed.orchestrator.isEmpty)
+                                    TextButton(
+                                      onPressed: () =>
+                                          selectTargetModel('Orchestrator'),
+                                      child: const Text('直接启用'),
+                                    ),
+                                ],
                               ),
-                              if (selected)
-                                Icon(Icons.check_circle_rounded,
-                                    size: 18, color: p.accent),
+                              if (parsed.orchestrator.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                for (int i = 0;
+                                    i < parsed.orchestrator.length;
+                                    i++) ...[
+                                  if (i > 0) const SizedBox(height: 7),
+                                  buildGroupCard(
+                                    parsed.orchestrator[i],
+                                    insideOrchestrator: true,
+                                  ),
+                                ],
+                              ],
                             ],
                           ),
                         ),
-                      );
-                    },
+                      ],
+                      for (int i = 0; i < parsed.standard.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 8),
+                        buildGroupCard(parsed.standard[i]),
+                      ],
+                    ],
                   ),
                 ),
               ],

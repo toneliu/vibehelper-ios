@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from typing import Any
 
-NATIVE_VERSION = 9
+NATIVE_VERSION = 10
 
 NATIVE_WATCH_PATHS = (
     "client-app/assets/android_overlay",

@@ -153,6 +153,16 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
       if (_tabIndex == 0) {
         unawaited(OverlayNotifier.cancelSystemNotification());
       }
+      if (OverlayNotifier.isIOS &&
+          ref.read(settingsProvider).overlayMode == 'island') {
+        unawaited(_syncActiveOverlay(forceShow: true));
+      }
+    } else if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      if (OverlayNotifier.isIOS &&
+          ref.read(settingsProvider).overlayMode == 'island') {
+        unawaited(_syncActiveOverlay(forceShow: true));
+      }
     }
   }
 
@@ -308,6 +318,20 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     );
   }
 
+  String _buildActiveHostHealthUrl(AppSettings settings) {
+    final parsed = Uri.tryParse(settings.wsUrl.trim());
+    if (parsed == null || parsed.host.isEmpty) return '';
+    final scheme = parsed.scheme == 'wss' ? 'https' : 'http';
+    final token = settings.activeHost.token.trim();
+    return Uri(
+      scheme: scheme,
+      host: parsed.host,
+      port: parsed.hasPort ? parsed.port : null,
+      path: '/api/health',
+      queryParameters: token.isNotEmpty ? {'token': token} : null,
+    ).toString();
+  }
+
   Future<void> _syncActiveOverlay({
     bool forceShow = false,
     bool expanded = false,
@@ -325,6 +349,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
 
     if (OverlayNotifier.isIOS) {
       if (settings.overlayMode == 'island') {
+        final healthUrl = _buildActiveHostHealthUrl(settings);
+        final keepAlive = settings.backgroundKeepAlive;
         if (forceShow) {
           await OverlayNotifier.showIsland(
             title: payload.title,
@@ -336,6 +362,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
             yOffsetDp: settings.islandYOffset,
             widthDp: settings.islandWidth,
             expanded: expanded,
+            healthUrl: healthUrl,
+            keepAlive: keepAlive,
           );
         } else {
           await OverlayNotifier.updateIsland(
@@ -347,6 +375,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
             autoExpand: settings.islandAutoExpand,
             yOffsetDp: settings.islandYOffset,
             widthDp: settings.islandWidth,
+            healthUrl: healthUrl,
+            keepAlive: keepAlive,
           );
         }
       } else {
@@ -1730,8 +1760,14 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     ref.listen<bool>(
       settingsProvider.select((s) => s.backgroundKeepAlive),
       (prev, next) {
-        if (!OverlayNotifier.isOverlaySupported || prev == next) return;
-        _syncKeepAlive();
+        if (prev == next) return;
+        if (OverlayNotifier.isOverlaySupported) {
+          _syncKeepAlive();
+        }
+        if (OverlayNotifier.isIOS &&
+            ref.read(settingsProvider).overlayMode == 'island') {
+          unawaited(_syncActiveOverlay());
+        }
       },
     );
     ref.listen<bool?>(
