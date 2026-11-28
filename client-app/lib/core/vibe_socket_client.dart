@@ -3,9 +3,11 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:uuid/uuid.dart';
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../protocol/messages.dart';
+import 'pinned_http_client.dart';
 
 enum ConnectionPhase {
   disconnected,
@@ -51,11 +53,11 @@ class SocketSnapshot {
 
 class VibeSocketClient {
   VibeSocketClient({WebSocketChannel Function(Uri uri)? channelFactory})
-      : _channelFactory = channelFactory ?? WebSocketChannel.connect;
+      : _channelFactory = channelFactory;
 
   static const _uuid = Uuid();
 
-  final WebSocketChannel Function(Uri uri) _channelFactory;
+  final WebSocketChannel Function(Uri uri)? _channelFactory;
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _subscription;
   Timer? _pingTimer;
@@ -64,6 +66,7 @@ class VibeSocketClient {
   String? _wsUrl;
   String _token = '';
   String _clientName = 'VibeHelper';
+  String _tlsCertSha256 = '';
   bool _manualDisconnect = false;
   int _reconnectAttempt = 0;
   int _connectEpoch = 0;
@@ -108,6 +111,7 @@ class VibeSocketClient {
     required String wsUrl,
     required String token,
     required String clientName,
+    String tlsCertSha256 = '',
     Duration connectTimeout = const Duration(seconds: 6),
   }) async {
     if (_disposed) return;
@@ -117,6 +121,7 @@ class VibeSocketClient {
     _wsUrl = wsUrl.trim();
     _token = token;
     _clientName = clientName;
+    _tlsCertSha256 = tlsCertSha256.trim();
     _reconnectAttempt = 0;
     await _openConnection(isReconnect: false, connectTimeout: connectTimeout);
   }
@@ -162,10 +167,31 @@ class VibeSocketClient {
     WebSocketChannel? channel;
     try {
       final uri = Uri.parse(url);
-      channel = _channelFactory(uri);
-      // Silence late async errors from channel.ready if the timeout fires first.
-      unawaited(channel.ready.then<void>((_) {}, onError: (_) {}));
-      await channel.ready.timeout(connectTimeout);
+      if (_channelFactory != null) {
+        channel = _channelFactory(uri);
+        // Silence late async errors from channel.ready if the timeout fires first.
+        unawaited(channel.ready.then<void>((_) {}, onError: (_) {}));
+        await channel.ready.timeout(connectTimeout);
+      } else {
+        final httpClient = createPinnedHttpClient(
+          pinnedCertSha256: _tlsCertSha256,
+          connectionTimeout: connectTimeout,
+        );
+        try {
+          final headers = <String, dynamic>{
+            if (_token.trim().isNotEmpty)
+              'Authorization': 'Bearer ${_token.trim()}',
+          };
+          final rawWs = await WebSocket.connect(
+            uri.toString(),
+            headers: headers.isNotEmpty ? headers : null,
+            customClient: httpClient,
+          ).timeout(connectTimeout);
+          channel = IOWebSocketChannel(rawWs);
+        } finally {
+          httpClient.close(force: false);
+        }
+      }
       if (_disposed || epoch != _connectEpoch || _manualDisconnect) {
         try {
           await channel.sink.close();

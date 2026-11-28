@@ -2069,25 +2069,30 @@ class NativeChatView extends ConsumerWidget {
                       ),
                     ),
                   )
-                : ListView.builder(
-                    reverse: true,
-                    padding: EdgeInsets.symmetric(
-                      horizontal: compactHeader ? 2 : 10,
-                      vertical: 8,
+                : RefreshIndicator(
+                    onRefresh: () =>
+                        ref.read(windowContentProvider.notifier).fetchContent(),
+                    child: ListView.builder(
+                      reverse: true,
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: EdgeInsets.symmetric(
+                        horizontal: compactHeader ? 6 : 10,
+                        vertical: 8,
+                      ),
+                      itemCount: blocks.length,
+                      itemBuilder: (ctx, revIdx) {
+                        final block = blocks[blocks.length - 1 - revIdx];
+                        return _ChatTurnCard(
+                          block: block,
+                          hostHttpBase: hostHttpBase,
+                          hostToken: hostToken,
+                          onRunCode: connected
+                              ? (code) => _sendQuickPrompt(context, ref, code,
+                                  autoSend: false)
+                              : null,
+                        );
+                      },
                     ),
-                    itemCount: blocks.length,
-                    itemBuilder: (ctx, revIdx) {
-                      final block = blocks[blocks.length - 1 - revIdx];
-                      return _ChatTurnCard(
-                        block: block,
-                        hostHttpBase: hostHttpBase,
-                        hostToken: hostToken,
-                        onRunCode: connected
-                            ? (code) => _sendQuickPrompt(context, ref, code,
-                                autoSend: false)
-                            : null,
-                      );
-                    },
                   ),
           ),
         ),

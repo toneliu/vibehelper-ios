@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/app_settings.dart';
+import '../../core/pinned_http_client.dart';
 import '../../core/vibe_socket_client.dart';
 import '../../protocol/messages.dart';
 
@@ -303,6 +304,114 @@ class IdeAccountItem {
       );
 }
 
+class AuthorizedDeviceItem {
+  const AuthorizedDeviceItem({
+    required this.id,
+    required this.name,
+    this.platform = 'unknown',
+    this.createdAt = '',
+    this.lastUsedAt = '',
+    this.lastIp = '',
+    this.revoked = false,
+  });
+
+  final String id;
+  final String name;
+  final String platform;
+  final String createdAt;
+  final String lastUsedAt;
+  final String lastIp;
+  final bool revoked;
+
+  factory AuthorizedDeviceItem.fromJson(Map<String, dynamic> json) =>
+      AuthorizedDeviceItem(
+        id: (json['id'] as String?) ?? '',
+        name: (json['name'] as String?) ?? '未命名设备',
+        platform: (json['platform'] as String?) ?? 'unknown',
+        createdAt: (json['created_at'] as String?) ?? '',
+        lastUsedAt: (json['last_used_at'] as String?) ?? '',
+        lastIp: (json['last_ip'] as String?) ?? '',
+        revoked: (json['revoked'] as bool?) ?? false,
+      );
+}
+
+class HostSecurityStatus {
+  const HostSecurityStatus({
+    this.authRequired = false,
+    this.requireAuth = false,
+    this.hasMasterPassword = false,
+    this.hasLegacyToken = false,
+    this.tlsEnabled = false,
+    this.tlsCertSha256 = '',
+    this.tlsCertMode = 'self_signed',
+    this.tlsCertFile = '',
+    this.tlsKeyFile = '',
+    this.tlsExtraSans = const [],
+    this.activePairCode = '',
+    this.activePairExpiresInS = 0,
+    this.devices = const [],
+    this.error,
+  });
+
+  final bool authRequired;
+  final bool requireAuth;
+  final bool hasMasterPassword;
+  final bool hasLegacyToken;
+  final bool tlsEnabled;
+  final String tlsCertSha256;
+  final String tlsCertMode;
+  final String tlsCertFile;
+  final String tlsKeyFile;
+  final List<String> tlsExtraSans;
+  final String activePairCode;
+  final int activePairExpiresInS;
+  final List<AuthorizedDeviceItem> devices;
+  final String? error;
+
+  factory HostSecurityStatus.fromJson(Map<String, dynamic> json) {
+    final rawDevs = (json['devices'] as List<dynamic>?) ?? const [];
+    final rawSans = (json['tls_extra_sans'] as List<dynamic>?) ?? const [];
+    final pair = json['active_pairing_code'];
+    final pairMap = pair is Map<String, dynamic> ? pair : null;
+    return HostSecurityStatus(
+      authRequired: (json['auth_required'] as bool?) ?? false,
+      requireAuth: (json['require_auth'] as bool?) ?? false,
+      hasMasterPassword: (json['has_master_password'] as bool?) ?? false,
+      hasLegacyToken: (json['has_legacy_token'] as bool?) ?? false,
+      tlsEnabled: (json['tls_enabled'] as bool?) ?? false,
+      tlsCertSha256: (json['tls_cert_sha256'] as String?) ?? '',
+      tlsCertMode: (json['tls_cert_mode'] as String?) ?? 'self_signed',
+      tlsCertFile: (json['tls_cert_file'] as String?) ?? '',
+      tlsKeyFile: (json['tls_key_file'] as String?) ?? '',
+      tlsExtraSans: rawSans.map((e) => e.toString()).where((e) => e.isNotEmpty).toList(),
+      activePairCode: (pairMap?['code'] as String?) ?? '',
+      activePairExpiresInS: (pairMap?['expires_in_s'] as num?)?.toInt() ?? 0,
+      devices: rawDevs
+          .whereType<Map<String, dynamic>>()
+          .map(AuthorizedDeviceItem.fromJson)
+          .toList(),
+    );
+  }
+}
+
+class PairHostResult {
+  const PairHostResult({
+    required this.ok,
+    this.deviceId = '',
+    this.deviceToken = '',
+    this.tlsCertSha256 = '',
+    this.hostName = '',
+    this.message = '',
+  });
+
+  final bool ok;
+  final String deviceId;
+  final String deviceToken;
+  final String tlsCertSha256;
+  final String hostName;
+  final String message;
+}
+
 class IdeAccountsSnapshot {
   const IdeAccountsSnapshot({
     required this.ideId,
@@ -417,6 +526,7 @@ class HostActionController {
       wsUrl: active.wsUrl,
       token: active.token,
       clientName: settings.clientName,
+      tlsCertSha256: active.tlsCertSha256,
       connectTimeout: connectTimeout,
     );
     return _client.snapshot.isConnected;
@@ -513,6 +623,7 @@ class HostActionController {
         wsUrl: active.wsUrl,
         token: active.token,
         clientName: settings.clientName,
+        tlsCertSha256: active.tlsCertSha256,
         connectTimeout: primaryTimeout,
       );
       if (_client.snapshot.isConnected) return true;
@@ -557,6 +668,7 @@ class HostActionController {
         wsUrl: candidate.wsUrl,
         token: candidate.token,
         clientName: _ref.read(settingsProvider).clientName,
+        tlsCertSha256: candidate.tlsCertSha256,
         connectTimeout: const Duration(seconds: 4),
       );
       if (_client.snapshot.isConnected) return true;
@@ -713,7 +825,6 @@ class HostActionController {
       'auto_enter': autoEnter ? 'true' : 'false',
       if (targetWindowId != null && targetWindowId.isNotEmpty)
         'target_window_id': targetWindowId,
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
     };
     final uploadUri = Uri(
       scheme: scheme,
@@ -723,10 +834,14 @@ class HostActionController {
       queryParameters: query,
     );
 
-    final httpClient = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+    final httpClient = _createHostClient(
+      pinnedCertSha256: settings.activeHost.tlsCertSha256,
+      timeout: const Duration(seconds: 10),
+    );
     try {
       final bytes = await File(filePath).readAsBytes();
       final req = await httpClient.postUrl(uploadUri);
+      applyAuthHeaders(req, settings.token);
       req.headers.set(HttpHeaders.contentTypeHeader, 'application/octet-stream');
       req.contentLength = bytes.length;
       req.add(bytes);
@@ -751,6 +866,21 @@ class HostActionController {
     } finally {
       httpClient.close(force: true);
     }
+  }
+
+  HttpClient _createHostClient({
+    String? pinnedCertSha256,
+    Duration timeout = const Duration(seconds: 6),
+    bool allowUntrustedForProbe = false,
+    void Function(String sha256Colon)? onPeerCertSha256,
+  }) {
+    final pin = pinnedCertSha256 ?? _ref.read(settingsProvider).activeHost.tlsCertSha256;
+    return createPinnedHttpClient(
+      pinnedCertSha256: pin,
+      connectionTimeout: timeout,
+      allowUntrustedForProbe: allowUntrustedForProbe,
+      onPeerCertSha256: onPeerCertSha256,
+    );
   }
 
   Uri? _buildHostHttpUri(
@@ -786,9 +916,13 @@ class HostActionController {
       );
     }
     final sw = Stopwatch()..start();
-    final httpClient = HttpClient()..connectionTimeout = timeout;
+    final httpClient = _createHostClient(
+      pinnedCertSha256: profile.tlsCertSha256,
+      timeout: timeout,
+    );
     try {
       final req = await httpClient.getUrl(uri);
+      applyAuthHeaders(req, profile.token);
       final resp = await req.close().timeout(timeout);
       final body = await resp.transform(utf8.decoder).join();
       sw.stop();
@@ -830,15 +964,12 @@ class HostActionController {
 
   Future<List<HostIdeApp>?> fetchHostApps() async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
-    final uri = _buildHostHttpUri(settings.wsUrl, '/api/host/apps', query);
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/host/apps');
     if (uri == null) return null;
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final req = await httpClient.getUrl(uri);
+      applyAuthHeaders(req, settings.token);
       final resp = await req.close().timeout(const Duration(seconds: 10));
       final body = await resp.transform(utf8.decoder).join();
       final decoded = jsonDecode(body);
@@ -863,16 +994,12 @@ class HostActionController {
     String? workspacePath,
   }) async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
-    final uri =
-        _buildHostHttpUri(settings.wsUrl, '/api/host/launch-ide', query);
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/host/launch-ide');
     if (uri == null) return (false, 'Host 地址无效');
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final req = await httpClient.postUrl(uri);
+      applyAuthHeaders(req, settings.token);
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode({
         'ide_id': ideId,
@@ -901,15 +1028,12 @@ class HostActionController {
     String ideId,
   ) async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
-    final uri = _buildHostHttpUri(settings.wsUrl, '/api/host/focus-ide', query);
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/host/focus-ide');
     if (uri == null) return (false, null, 'Host 地址无效');
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 4));
     try {
       final req = await httpClient.postUrl(uri);
+      applyAuthHeaders(req, settings.token);
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode({'ide_id': ideId}));
       final resp = await req.close().timeout(const Duration(seconds: 6));
@@ -937,7 +1061,6 @@ class HostActionController {
   }) async {
     final settings = _ref.read(settingsProvider);
     final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
       if (sessionId != null && sessionId.trim().isNotEmpty)
         'session_id': sessionId.trim(),
       if (windowId != null && windowId.trim().isNotEmpty)
@@ -947,10 +1070,10 @@ class HostActionController {
     if (uri == null) {
       return const HostUsageReport(error: 'Host 地址无效，请先在「主机」页配置连接');
     }
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 4));
     try {
       final req = await httpClient.getUrl(uri);
+      applyAuthHeaders(req, settings.token);
       final resp = await req.close().timeout(const Duration(seconds: 8));
       final body = await resp.transform(utf8.decoder).join();
       final decoded = jsonDecode(body);
@@ -982,7 +1105,6 @@ class HostActionController {
       })> fetchHostModels({String? windowId}) async {
     final settings = _ref.read(settingsProvider);
     final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
       if (windowId != null && windowId.trim().isNotEmpty)
         'window_id': windowId.trim(),
     };
@@ -996,10 +1118,10 @@ class HostActionController {
         permissionModes: const <({String id, String label, String zh})>[],
       );
     }
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 4);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 4));
     try {
       final req = await httpClient.getUrl(uri);
+      applyAuthHeaders(req, settings.token);
       final resp = await req.close().timeout(const Duration(seconds: 8));
       final body = await resp.transform(utf8.decoder).join();
       final decoded = jsonDecode(body);
@@ -1050,15 +1172,12 @@ class HostActionController {
 
   Future<ProjectListResponse?> fetchProjects() async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
-    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects', query);
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects');
     if (uri == null) return null;
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final req = await httpClient.getUrl(uri);
+      applyAuthHeaders(req, settings.token);
       final resp = await req.close().timeout(const Duration(seconds: 10));
       final body = await resp.transform(utf8.decoder).join();
       if (resp.statusCode != 200) return null;
@@ -1094,15 +1213,12 @@ class HostActionController {
     String ideId = 'antigravity',
   }) async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
-    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects', query);
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects');
     if (uri == null) return (false, null, 'Host 地址无效');
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final req = await httpClient.postUrl(uri);
+      applyAuthHeaders(req, settings.token);
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode({
         'name': name.trim(),
@@ -1149,16 +1265,12 @@ class HostActionController {
     String projectPath = '',
   }) async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
-    final uri =
-        _buildHostHttpUri(settings.wsUrl, '/api/projects/assign', query);
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects/assign');
     if (uri == null) return (false, 'Host 地址无效');
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final req = await httpClient.postUrl(uri);
+      applyAuthHeaders(req, settings.token);
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode({
         'session_id': sessionId,
@@ -1190,17 +1302,14 @@ class HostActionController {
     String ideId = 'antigravity',
   }) async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
     final safeId = Uri.encodeComponent(projectId);
     final uri =
-        _buildHostHttpUri(settings.wsUrl, '/api/projects/$safeId/open', query);
+        _buildHostHttpUri(settings.wsUrl, '/api/projects/$safeId/open');
     if (uri == null) return (false, 'Host 地址无效');
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final req = await httpClient.postUrl(uri);
+      applyAuthHeaders(req, settings.token);
       req.headers.contentType = ContentType.json;
       req.write(jsonEncode({'ide_id': ideId}));
       final resp = await req.close().timeout(const Duration(seconds: 12));
@@ -1222,17 +1331,13 @@ class HostActionController {
 
   Future<bool> deleteProject(String projectId) async {
     final settings = _ref.read(settingsProvider);
-    final query = <String, String>{
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
-    };
     final safeId = Uri.encodeComponent(projectId);
-    final uri =
-        _buildHostHttpUri(settings.wsUrl, '/api/projects/$safeId', query);
+    final uri = _buildHostHttpUri(settings.wsUrl, '/api/projects/$safeId');
     if (uri == null) return false;
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final req = await httpClient.deleteUrl(uri);
+      applyAuthHeaders(req, settings.token);
       final resp = await req.close().timeout(const Duration(seconds: 10));
       final body = await resp.transform(utf8.decoder).join();
       final decoded = jsonDecode(body);
@@ -1256,12 +1361,10 @@ class HostActionController {
     final settings = _ref.read(settingsProvider);
     final query = <String, String>{
       if (extraQuery != null) ...extraQuery,
-      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
     };
     final uri = _buildHostHttpUri(settings.wsUrl, path, query);
     if (uri == null) return (false, 'Host 地址无效', null);
-    final httpClient = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5);
+    final httpClient = _createHostClient(timeout: const Duration(seconds: 5));
     try {
       final HttpClientRequest req;
       switch (method) {
@@ -1276,6 +1379,7 @@ class HostActionController {
         default:
           req = await httpClient.openUrl(method, uri);
       }
+      applyAuthHeaders(req, settings.token);
       if (body != null) {
         req.headers.contentType = ContentType.json;
         req.write(jsonEncode(body));
@@ -1378,6 +1482,157 @@ class HostActionController {
       'DELETE',
       '/api/host/accounts/$safeId',
       extraQuery: {'ide_id': ideId},
+    );
+    return (ok, msg);
+  }
+
+  Future<PairHostResult> pairHost({
+    required String wsUrl,
+    String code = '',
+    String password = '',
+    required String deviceName,
+    String expectedCertSha256 = '',
+  }) async {
+    final uri = _buildHostHttpUri(wsUrl, '/api/auth/pair');
+    if (uri == null) {
+      return const PairHostResult(ok: false, message: 'Host 地址无效');
+    }
+    var observedPeerSha256 = '';
+    final httpClient = _createHostClient(
+      pinnedCertSha256: expectedCertSha256,
+      allowUntrustedForProbe: expectedCertSha256.trim().isEmpty,
+      onPeerCertSha256: (fp) => observedPeerSha256 = fp,
+      timeout: const Duration(seconds: 8),
+    );
+    try {
+      final plat = Platform.isIOS
+          ? 'ios'
+          : (Platform.isAndroid ? 'android' : Platform.operatingSystem);
+      final req = await httpClient.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode({
+        if (code.trim().isNotEmpty) 'code': code.trim(),
+        if (password.isNotEmpty) 'password': password,
+        'device_name': deviceName.trim().isEmpty ? 'Mobile Device' : deviceName.trim(),
+        'platform': plat,
+      }));
+      final resp = await req.close().timeout(const Duration(seconds: 10));
+      final raw = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        if (resp.statusCode == 200 && decoded['ok'] == true) {
+          final serverSha = (decoded['tls_cert_sha256'] as String?) ?? '';
+          if (observedPeerSha256.isNotEmpty &&
+              serverSha.isNotEmpty &&
+              normalizeCertFingerprint(observedPeerSha256) !=
+                  normalizeCertFingerprint(serverSha)) {
+            return const PairHostResult(
+              ok: false,
+              message: 'TLS 证书指纹不匹配，疑似中间人劫持，已中止配对！',
+            );
+          }
+          final pinnedSha =
+              observedPeerSha256.isNotEmpty ? observedPeerSha256 : serverSha;
+          return PairHostResult(
+            ok: true,
+            deviceId: (decoded['device_id'] as String?) ?? '',
+            deviceToken: (decoded['device_token'] as String?) ?? '',
+            tlsCertSha256: pinnedSha,
+            hostName: (decoded['host_name'] as String?) ?? '',
+            message: '配对成功，已颁发设备专用凭证',
+          );
+        }
+        return PairHostResult(
+          ok: false,
+          message: (decoded['message'] as String?) ??
+              '配对失败 (HTTP ${resp.statusCode})',
+        );
+      }
+      return PairHostResult(
+        ok: false,
+        message: '服务器响应异常 (HTTP ${resp.statusCode})',
+      );
+    } catch (e) {
+      return PairHostResult(ok: false, message: '配对连接失败: $e');
+    } finally {
+      httpClient.close(force: true);
+    }
+  }
+
+  Future<HostSecurityStatus> fetchHostSecurity() async {
+    final (ok, msg, decoded) = await _accountHttpJson('GET', '/api/host/security');
+    if (!ok || decoded == null) {
+      return HostSecurityStatus(error: msg.isNotEmpty ? msg : '加载安全状态失败');
+    }
+    return HostSecurityStatus.fromJson(decoded);
+  }
+
+  Future<(bool ok, String code, int expiresInS, String message)>
+      generatePairingCode({int ttlS = 600}) async {
+    final (ok, msg, decoded) = await _accountHttpJson(
+      'POST',
+      '/api/host/security/pair-code',
+      body: {'ttl_s': ttlS},
+    );
+    if (!ok || decoded == null) {
+      return (false, '', 0, msg);
+    }
+    return (
+      true,
+      (decoded['code'] as String?) ?? '',
+      (decoded['expires_in_s'] as num?)?.toInt() ?? 0,
+      '已生成 6 位配对码',
+    );
+  }
+
+  Future<(bool ok, String message)> setMasterPassword({
+    String? password,
+    bool clear = false,
+    bool? requireAuth,
+  }) async {
+    final (ok, msg, _) = await _accountHttpJson(
+      'POST',
+      '/api/host/security/password',
+      body: {
+        if (clear) 'clear': true,
+        if (password != null && password.isNotEmpty) 'password': password,
+        if (requireAuth != null) 'require_auth': requireAuth,
+      },
+    );
+    return (ok, msg);
+  }
+
+  Future<(bool ok, String tlsCertSha256, String message)> configureHostTls({
+    required bool enabled,
+    String certFile = '',
+    String keyFile = '',
+    List<String> extraSans = const [],
+    bool regenerate = false,
+  }) async {
+    final (ok, msg, decoded) = await _accountHttpJson(
+      'POST',
+      '/api/host/security/tls',
+      body: {
+        'tls_enabled': enabled,
+        'tls_cert_file': certFile.trim(),
+        'tls_key_file': keyFile.trim(),
+        'tls_extra_sans': extraSans,
+        'regenerate': regenerate,
+      },
+    );
+    return (
+      ok,
+      (decoded?['tls_cert_sha256'] as String?) ?? '',
+      msg,
+    );
+  }
+
+  Future<(bool ok, String message)> revokeDevice(String deviceId) async {
+    final safeId = Uri.encodeComponent(deviceId);
+    final (ok, msg, _) = await _accountHttpJson(
+      'POST',
+      '/api/host/security/devices/$safeId/revoke',
+      body: const <String, dynamic>{},
     );
     return (ok, msg);
   }

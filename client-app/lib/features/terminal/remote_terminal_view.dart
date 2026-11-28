@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/pinned_http_client.dart';
 import '../../core/theme.dart';
 
 /// Interactive remote terminal tab backed by `/ws/terminal`.
@@ -13,6 +14,7 @@ class RemoteTerminalView extends StatefulWidget {
     super.key,
     required this.wsUrl,
     required this.token,
+    this.tlsCertSha256 = '',
     required this.hostConnected,
     required this.isActiveTab,
     required this.hostOs,
@@ -21,6 +23,7 @@ class RemoteTerminalView extends StatefulWidget {
 
   final String wsUrl;
   final String token;
+  final String tlsCertSha256;
   final bool hostConnected;
   final bool isActiveTab;
   final String hostOs;
@@ -157,8 +160,18 @@ class _RemoteTerminalViewState extends State<RemoteTerminalView> {
     });
 
     try {
-      final ws = await WebSocket.connect(uri.toString())
-          .timeout(const Duration(seconds: 6));
+      final pinnedClient = createPinnedHttpClient(
+        pinnedCertSha256: widget.tlsCertSha256,
+        connectionTimeout: const Duration(seconds: 6),
+      );
+      final token = widget.token.trim();
+      final ws = await WebSocket.connect(
+        uri.toString(),
+        headers: token.isNotEmpty
+            ? <String, dynamic>{'Authorization': 'Bearer $token'}
+            : null,
+        customClient: pinnedClient,
+      ).timeout(const Duration(seconds: 6));
       if (!mounted) {
         await ws.close();
         return;

@@ -16,6 +16,7 @@ import '../../core/vibe_socket_client.dart';
 import '../../core/zoomable_viewport.dart';
 import '../../protocol/messages.dart';
 import '../connection/connection_controller.dart';
+import '../connection/host_pair_dialog.dart';
 import '../reader/native_chat_view.dart';
 import '../reader/window_content_controller.dart';
 import '../stream/webrtc_stream_controller.dart';
@@ -24,6 +25,7 @@ import '../update/update_controller.dart';
 import '../windows/window_controller.dart';
 import '../windows/window_selector_panel.dart';
 import 'access_log_sheet.dart';
+import 'host_security_sheet.dart';
 import 'ide_account_sheet.dart';
 import 'project_sheets.dart';
 
@@ -67,6 +69,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
   String _lastSyncedDraft = '';
   bool _applyingRemoteDraft = false;
   bool _isSending = false;
+  bool _isInterrupting = false;
   String _lastSentText = '';
   DateTime _lastSentAt = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -772,41 +775,51 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     bool removeFromLocalQueue = false,
     bool clearComposer = false,
   }) async {
+    if (_isInterrupting) return;
     final text = rawText.trim();
     if (text.isEmpty) return;
+    _isInterrupting = true;
+    _pauseSendTimer?.cancel();
+    _draftSyncDebounce?.cancel();
     final targetWindowId = ref.read(windowControllerProvider).selectedWindowId;
-
-    if (removeFromLocalQueue) {
-      HapticFeedback.mediumImpact();
-      setState(() {
-        _localQueuedMessages.remove(text);
-        _localQueueAddedAt.remove(text);
-      });
-      ref.read(hostActionProvider).sendControlKey(
-            key: 'vh:send_now:$text',
-            targetWindowId: targetWindowId,
-          );
-      for (final ms in const [650, 1500]) {
-        Future<void>.delayed(Duration(milliseconds: ms), () {
-          if (!mounted) return;
-          unawaited(ref.read(windowContentProvider.notifier).fetchContent());
+    try {
+      if (removeFromLocalQueue) {
+        HapticFeedback.mediumImpact();
+        setState(() {
+          _localQueuedMessages.remove(text);
+          _localQueueAddedAt.remove(text);
         });
+        ref.read(hostActionProvider).sendControlKey(
+              key: 'vh:send_now:$text',
+              targetWindowId: targetWindowId,
+            );
+        for (final ms in const [700, 1600]) {
+          Future<void>.delayed(Duration(milliseconds: ms), () {
+            if (!mounted) return;
+            unawaited(ref.read(windowContentProvider.notifier).fetchContent());
+          });
+        }
+        return;
       }
-      return;
-    }
 
-    _interruptCurrentAgent();
-    if (clearComposer) {
-      setState(() {
-        _applyingRemoteDraft = true;
-        _inputCtrl.clear();
-        _applyingRemoteDraft = false;
-        _lastSyncedDraft = '';
-      });
+      if (clearComposer) {
+        setState(() {
+          _applyingRemoteDraft = true;
+          _inputCtrl.clear();
+          _applyingRemoteDraft = false;
+          _lastSyncedDraft = '';
+        });
+        ref
+            .read(hostActionProvider)
+            .syncDraft(text: '', targetWindowId: targetWindowId);
+      }
+      _interruptCurrentAgent();
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+      await _sendText(overrideText: text, skipLocalQueue: true);
+    } finally {
+      _isInterrupting = false;
     }
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (!mounted) return;
-    await _sendText(overrideText: text, skipLocalQueue: true);
   }
 
   void _insertDraft(String draft) {
@@ -1640,80 +1653,18 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
   }
 
   Future<void> _showEditHostDialog({HostProfile? existing}) async {
-    final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    final urlCtrl =
-        TextEditingController(text: existing?.wsUrl ?? '192.168.1.');
-    final tokenCtrl = TextEditingController(text: existing?.token ?? '');
-
-    final saved = await showDialog<HostProfile>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(existing == null ? '新增被控端 (Host)' : '编辑被控端'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(
-                  labelText: '主机名称',
-                  hintText: '例如：办公室 Win11 / Ubuntu 服务器',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: urlCtrl,
-                decoration: const InputDecoration(
-                  labelText: '地址 (支持 IP / IP:端口 / ws://...)',
-                  hintText: '192.168.110.125:8765',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: tokenCtrl,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '鉴权 Token (可选)',
-                  hintText: '未开启鉴权可留空',
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final url = normalizeWsUrl(urlCtrl.text);
-              if (url.isEmpty) return;
-              Navigator.of(ctx).pop(
-                HostProfile(
-                  id: existing?.id ??
-                      'host-${DateTime.now().millisecondsSinceEpoch}',
-                  name: nameCtrl.text.trim().isEmpty
-                      ? inferHostLabel(url)
-                      : nameCtrl.text.trim(),
-                  wsUrl: url,
-                  token: tokenCtrl.text.trim(),
-                ),
-              );
-            },
-            child: const Text('保存'),
-          ),
-        ],
-      ),
+    final saved = await showHostEditOrPairDialog(
+      context,
+      ref,
+      existing: existing,
     );
-    nameCtrl.dispose();
-    urlCtrl.dispose();
-    tokenCtrl.dispose();
-
     if (saved != null) {
       await ref
           .read(settingsProvider.notifier)
-          .upsertHostProfile(saved, select: existing == null);
+          .upsertHostProfile(saved, select: true);
+      if (saved.authMode == 'paired' && saved.token.isNotEmpty) {
+        unawaited(ref.read(hostActionProvider).connectFromSettings());
+      }
       unawaited(_probeAllHosts());
     }
   }
@@ -1861,6 +1812,22 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
       ConnectionPhase.error || ConnectionPhase.disconnected => '连接服务',
     };
 
+    final chatSessions =
+        contentState.content?.sessions ?? const <AgentSessionItem>[];
+    final chatActiveId = contentState.content?.activeSessionId;
+    final chatActiveSession =
+        chatSessions.where((s) => s.id == chatActiveId).firstOrNull ??
+            (chatSessions.isNotEmpty ? chatSessions.first : null);
+    final headerTabTitle = switch (_tabIndex) {
+      1 => '远程控屏',
+      2 => '远程终端',
+      3 => '主机管理',
+      4 => '我的与设置',
+      _ => chatActiveSession?.title.isNotEmpty == true
+          ? chatActiveSession!.title
+          : '新对话',
+    };
+
     return Scaffold(
       key: _scaffoldKey,
       backgroundColor: p.bg,
@@ -1885,16 +1852,16 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
           bottom: false,
           child: Column(
             children: [
-              // 1. LingGuang-style floating minimalist top header
+              // 1. Minimalist Top Header: [=] | [Session Title ▾] | [● Host · RTT]
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
                 child: Row(
                   children: [
                     // Circular `=` drawer toggle
                     Material(
                       color: p.panel.withValues(alpha: p.isDark ? 1.0 : 0.92),
                       shape: const CircleBorder(),
-                      elevation: p.isDark ? 0 : 2,
+                      elevation: p.isDark ? 0 : 1.5,
                       shadowColor: Colors.black.withValues(alpha: 0.08),
                       child: InkWell(
                         customBorder: const CircleBorder(),
@@ -1906,8 +1873,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                           }
                         },
                         child: Container(
-                          width: 42,
-                          height: 42,
+                          width: 38,
+                          height: 38,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             border: Border.all(
@@ -1916,18 +1883,72 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                           ),
                           child: Icon(
                             Icons.drag_handle_rounded,
-                            size: 22,
+                            size: 20,
                             color: p.text,
                           ),
                         ),
                       ),
                     ),
-                    const Spacer(),
-                    // Top-right `连接服务 / 主机 · 应用` capsule
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _tabIndex == 0
+                          ? InkWell(
+                              borderRadius: BorderRadius.circular(12),
+                              onTap: () => openSessionPickerSheet(
+                                context,
+                                ref,
+                                chatSessions,
+                                chatActiveId,
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 6),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Flexible(
+                                      child: Text(
+                                        headerTabTitle,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w700,
+                                          color: p.text,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 3),
+                                    Icon(
+                                      Icons.expand_more_rounded,
+                                      size: 18,
+                                      color: p.muted,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            )
+                          : Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 6),
+                              child: Text(
+                                headerTabTitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 15.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: p.text,
+                                ),
+                              ),
+                            ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Top-right compact Host / Window pill
                     Material(
                       color: p.panel.withValues(alpha: p.isDark ? 1.0 : 0.92),
                       borderRadius: BorderRadius.circular(999),
-                      elevation: p.isDark ? 0 : 2,
+                      elevation: p.isDark ? 0 : 1.5,
                       shadowColor: Colors.black.withValues(alpha: 0.08),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(999),
@@ -1938,7 +1959,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                         onLongPress: () => _switchToTab(3),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 13, vertical: 9),
+                              horizontal: 10, vertical: 7),
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(999),
                             border: Border.all(
@@ -1950,8 +1971,8 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                             children: [
                               if (isConnectingPhase)
                                 SizedBox(
-                                  width: 9,
-                                  height: 9,
+                                  width: 8,
+                                  height: 8,
                                   child: CircularProgressIndicator(
                                     strokeWidth: 1.6,
                                     color: p.warning,
@@ -1959,37 +1980,34 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                                 )
                               else
                                 Container(
-                                  width: 8,
-                                  height: 8,
+                                  width: 7.5,
+                                  height: 7.5,
                                   decoration: BoxDecoration(
                                     color: dotColor,
                                     shape: BoxShape.circle,
                                   ),
                                 ),
-                              const SizedBox(width: 7),
-                              Icon(Icons.grid_view_rounded,
-                                  size: 15, color: p.text),
                               const SizedBox(width: 5),
                               ConstrainedBox(
                                 constraints:
-                                    const BoxConstraints(maxWidth: 165),
+                                    const BoxConstraints(maxWidth: 108),
                                 child: Text(
                                   capsuleLabel,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    fontSize: 12.5,
+                                    fontSize: 12,
                                     fontWeight: FontWeight.w600,
                                     color: p.text,
                                   ),
                                 ),
                               ),
                               if (connected && connSnap.rttMs != null) ...[
-                                const SizedBox(width: 5),
+                                const SizedBox(width: 4),
                                 Text(
                                   '${connSnap.rttMs}ms',
                                   style: TextStyle(
-                                    fontSize: 10.5,
+                                    fontSize: 10,
                                     color: p.muted,
                                   ),
                                 ),
@@ -2183,6 +2201,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                     RemoteTerminalView(
                       wsUrl: settings.wsUrl,
                       token: settings.token,
+                      tlsCertSha256: settings.activeHost.tlsCertSha256,
                       hostConnected: connected,
                       isActiveTab: _tabIndex == 2,
                       hostOs: connSnap.hostInfo?.os ?? '',
@@ -3114,237 +3133,144 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
               ),
             ),
           ),
-        // Subtle session / model status pill strip when active messages exist
-        if (blocks.isNotEmpty || connected)
+        // Row 2: Horizontal scrollable context chip strip (never overlaps on narrow screens)
+        if ((blocks.isNotEmpty || connected) &&
+            ((activeSession != null &&
+                    activeSession.projectName.isNotEmpty) ||
+                connected))
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Row(
-              children: [
-                if (activeSession != null)
-                  Expanded(
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(999),
-                      onTap: () => openSessionPickerSheet(
-                          context, ref, sessions, activeId),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          color:
-                              p.panel.withValues(alpha: p.isDark ? 0.9 : 0.78),
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(
-                              color: p.border.withValues(alpha: 0.75)),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (activeSession.projectName.isNotEmpty) ...[
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 6, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: p.accent.withValues(alpha: 0.12),
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.folder_rounded,
-                                        size: 11, color: p.accent),
-                                    const SizedBox(width: 3),
-                                    ConstrainedBox(
-                                      constraints:
-                                          const BoxConstraints(maxWidth: 74),
-                                      child: Text(
-                                        activeSession.projectName,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w700,
-                                          color: p.accent,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(width: 5),
-                            ] else ...[
-                              Icon(Icons.chat_bubble_outline_rounded,
-                                  size: 13, color: p.accent),
-                              const SizedBox(width: 5),
-                            ],
-                            Expanded(
-                              child: Text(
-                                activeSession.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (activeSession != null &&
+                        activeSession.projectName.isNotEmpty) ...[
+                      InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () => openSessionPickerSheet(
+                            context, ref, sessions, activeId),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: p.panel
+                                .withValues(alpha: p.isDark ? 0.9 : 0.78),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                                color: p.border.withValues(alpha: 0.75)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.folder_rounded,
+                                  size: 12, color: p.accent),
+                              const SizedBox(width: 4),
+                              Text(
+                                activeSession.projectName,
                                 style: TextStyle(
-                                  fontSize: 11.5,
+                                  fontSize: 11,
                                   fontWeight: FontWeight.w600,
                                   color: p.text,
                                 ),
                               ),
-                            ),
-                            Icon(Icons.expand_more_rounded,
-                                size: 15, color: p.muted),
-                          ],
-                        ),
-                      ),
-                    ),
-                  )
-                else
-                  const Spacer(),
-                const SizedBox(width: 6),
-                InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: connected
-                      ? () => openModelPickerSheet(
-                            context,
-                            ref,
-                            activeModel,
-                            content?.availableModels ?? const <String>[],
-                            winState.selectedWindowId,
-                          )
-                      : null,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: p.panel.withValues(alpha: p.isDark ? 0.9 : 0.78),
-                      borderRadius: BorderRadius.circular(999),
-                      border:
-                          Border.all(color: p.accent.withValues(alpha: 0.35)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.tune_rounded,
-                            size: 12, color: p.accent),
-                        const SizedBox(width: 4),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 90),
-                          child: Text(
-                            activeModel.isNotEmpty ? activeModel : '模型',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              color: p.accent,
-                            ),
+                            ],
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                ),
-                if (connected && accountApp != null) ...[
-                  const SizedBox(width: 4),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(999),
-                    onTap: () => unawaited(_openIdeAccountSheet(
-                      ideId: accountApp.id,
-                      ideName: accountApp.name,
-                    )),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 7, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: p.panel.withValues(alpha: p.isDark ? 0.9 : 0.78),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    if (connected) ...[
+                      InkWell(
                         borderRadius: BorderRadius.circular(999),
-                        border:
-                            Border.all(color: p.border.withValues(alpha: 0.75)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(Icons.manage_accounts_rounded,
-                              size: 12, color: p.accent),
-                          const SizedBox(width: 3),
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 56),
-                            child: Text(
-                              accountApp.activeAccountLabel.isNotEmpty
-                                  ? accountApp.activeAccountLabel
-                                  : (accountApp.currentUsername.isNotEmpty
-                                      ? accountApp.currentUsername
-                                      : '切号'),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w600,
-                                color: p.text,
-                              ),
-                            ),
+                        onTap: () => openModelPickerSheet(
+                          context,
+                          ref,
+                          activeModel,
+                          content?.availableModels ?? const <String>[],
+                          winState.selectedWindowId,
+                        ),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: p.panel
+                                .withValues(alpha: p.isDark ? 0.9 : 0.78),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                                color: p.accent.withValues(alpha: 0.35)),
                           ),
-                        ],
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.tune_rounded,
+                                  size: 12, color: p.accent),
+                              const SizedBox(width: 4),
+                              Text(
+                                activeModel.isNotEmpty ? activeModel : '选择模型',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: p.accent,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                ],
-                const SizedBox(width: 5),
-                InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: connected
-                      ? () =>
-                          contentCtrl.setAutoRefresh(!contentState.autoRefresh)
-                      : null,
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: contentState.autoRefresh
-                          ? p.success.withValues(alpha: 0.14)
-                          : p.panel.withValues(alpha: p.isDark ? 0.9 : 0.78),
-                      borderRadius: BorderRadius.circular(999),
-                      border: Border.all(
-                        color: contentState.autoRefresh
-                            ? p.success.withValues(alpha: 0.5)
-                            : p.border.withValues(alpha: 0.75),
+                    ],
+                    if (connected && accountApp != null) ...[
+                      const SizedBox(width: 8),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(999),
+                        onTap: () => unawaited(_openIdeAccountSheet(
+                          ideId: accountApp.id,
+                          ideName: accountApp.name,
+                        )),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: p.panel
+                                .withValues(alpha: p.isDark ? 0.9 : 0.78),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                                color: p.border.withValues(alpha: 0.75)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.manage_accounts_rounded,
+                                  size: 12, color: p.accent),
+                              const SizedBox(width: 4),
+                              Text(
+                                accountApp.activeAccountLabel.isNotEmpty
+                                    ? accountApp.activeAccountLabel
+                                    : (accountApp.currentUsername.isNotEmpty
+                                        ? accountApp.currentUsername
+                                        : '切号'),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: p.text,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      contentState.autoRefresh ? '同步:开' : '同步',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: contentState.autoRefresh ? p.success : p.muted,
-                      ),
-                    ),
-                  ),
+                    ],
+                  ],
                 ),
-                const SizedBox(width: 4),
-                InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: connected
-                      ? () => unawaited(contentCtrl.fetchContent())
-                      : null,
-                  child: Container(
-                    padding: const EdgeInsets.all(5),
-                    decoration: BoxDecoration(
-                      color: p.panel.withValues(alpha: p.isDark ? 0.9 : 0.78),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: p.border.withValues(alpha: 0.75)),
-                    ),
-                    child: contentState.isLoadingContent
-                        ? const SizedBox(
-                            width: 14,
-                            height: 14,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Icon(Icons.refresh_rounded,
-                            size: 15, color: p.muted),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
 
-        // Main content: LingGuang Greeting Home (when empty) OR Native Chat
+        // Main content: LingGuang Greeting Home (when empty) OR Full-Width Native Chat
         Expanded(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -3355,7 +3281,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
               }
             },
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
+              padding: EdgeInsets.symmetric(horizontal: blocks.isEmpty ? 14 : 4),
               child: blocks.isEmpty
                   ? _buildGreetingHome(
                       p,
@@ -3710,6 +3636,10 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     String activeModel,
   ) {
     final actions = ref.read(hostActionProvider);
+    final contentCtrl = ref.read(windowContentProvider.notifier);
+    final autoRefresh = ref.watch(
+      windowContentProvider.select((s) => s.autoRefresh),
+    );
     final targetWindowId = winState.selectedWindowId;
 
     Widget primaryTile({
@@ -3924,6 +3854,34 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                 tintColor: p.accent,
                 semanticTint: true,
                 onTap: connected ? () => _sendText(overrideText: '继续') : null,
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Row(
+            children: [
+              primaryTile(
+                icon: autoRefresh
+                    ? Icons.sync_rounded
+                    : Icons.sync_disabled_rounded,
+                label: autoRefresh ? '自动同步:开' : '自动同步:关',
+                tintColor: autoRefresh ? p.success : p.muted,
+                semanticTint: autoRefresh,
+                onTap: connected
+                    ? () => contentCtrl.setAutoRefresh(!autoRefresh)
+                    : null,
+              ),
+              const SizedBox(width: 7),
+              primaryTile(
+                icon: Icons.refresh_rounded,
+                label: '刷新对话',
+                tintColor: p.accent,
+                onTap: connected
+                    ? () {
+                        setState(() => _showPlusMenu = false);
+                        unawaited(contentCtrl.fetchContent());
+                      }
+                    : null,
               ),
             ],
           ),
@@ -4926,6 +4884,72 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
             const SizedBox(height: 10),
           ],
 
+          // Host Security & Device Pairing Card
+          InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: () {
+              if (!connected) {
+                _showTopNotice('请先连接到目标宿主机再管理安全配置', isError: true);
+                return;
+              }
+              final active = settings.activeHost;
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => HostSecurityPage(
+                    hostName: active.name.trim().isNotEmpty
+                        ? active.name.trim()
+                        : inferHostLabel(active.wsUrl),
+                  ),
+                ),
+              );
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: p.panel,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: p.border),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: p.success.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(Icons.verified_user_rounded,
+                        size: 20, color: p.success),
+                  ),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '主机安全、配对码与 TLS 加密',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                            color: p.text,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '生成 6 位配对码、设置主密码、开关 HTTPS/WSS、吊销设备',
+                          style: TextStyle(fontSize: 11.5, color: p.muted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(Icons.chevron_right_rounded, color: p.muted),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+
           // Security & Audit Log Card
           InkWell(
             borderRadius: BorderRadius.circular(14),
@@ -4941,6 +4965,7 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                   builder: (_) => AccessLogPage(
                     hostHttpBase: base,
                     hostToken: active.token,
+                    tlsCertSha256: active.tlsCertSha256,
                     hostName: active.name.trim().isNotEmpty
                         ? active.name.trim()
                         : inferHostLabel(active.wsUrl),

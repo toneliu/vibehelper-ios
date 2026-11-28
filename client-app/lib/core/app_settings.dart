@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../protocol/messages.dart';
+import 'pinned_http_client.dart';
 
 enum VoiceInputEngine {
   imeDirect('ime_direct', '输入法语音直发（推荐/兼容小米）'),
@@ -56,8 +57,8 @@ enum DesktopHotkeyPreset {
   }
 }
 
-/// Normalize user-entered host address (`192.168.1.10`, `192.168.1.10:8765`, or full `ws://...`)
-/// into a canonical `ws://host:port/ws` URL.
+/// Normalize user-entered host address (`192.168.1.10`, `192.168.1.10:8765`, `https://...`, or `ws://...`)
+/// into a canonical `ws://` or `wss://` WebSocket URL.
 String normalizeWsUrl(String raw) {
   final trimmed = raw.trim();
   if (trimmed.isEmpty) return 'ws://127.0.0.1:8765/ws';
@@ -67,6 +68,30 @@ String normalizeWsUrl(String raw) {
       return uri.replace(path: '/ws').toString();
     }
     return trimmed;
+  }
+  if (trimmed.startsWith('https://')) {
+    final uri = Uri.tryParse(trimmed);
+    if (uri != null && uri.host.isNotEmpty) {
+      return uri
+          .replace(
+            scheme: 'wss',
+            port: uri.hasPort ? uri.port : 8765,
+            path: '/ws',
+          )
+          .toString();
+    }
+  }
+  if (trimmed.startsWith('http://')) {
+    final uri = Uri.tryParse(trimmed);
+    if (uri != null && uri.host.isNotEmpty) {
+      return uri
+          .replace(
+            scheme: 'ws',
+            port: uri.hasPort ? uri.port : 8765,
+            path: '/ws',
+          )
+          .toString();
+    }
   }
   var cleaned = trimmed
       .replaceFirst(RegExp(r'^https?://'), '')
@@ -96,24 +121,39 @@ class HostProfile {
     required this.name,
     required this.wsUrl,
     this.token = '',
+    this.deviceId = '',
+    this.tlsCertSha256 = '',
+    this.authMode = '',
   });
 
   final String id;
   final String name;
   final String wsUrl;
   final String token;
+  final String deviceId;
+  final String tlsCertSha256;
+  final String authMode;
+
+  bool get isTls => wsUrl.trim().toLowerCase().startsWith('wss://');
+  bool get hasPinnedCert => tlsCertSha256.trim().isNotEmpty;
 
   HostProfile copyWith({
     String? id,
     String? name,
     String? wsUrl,
     String? token,
+    String? deviceId,
+    String? tlsCertSha256,
+    String? authMode,
   }) {
     return HostProfile(
       id: id ?? this.id,
       name: name ?? this.name,
       wsUrl: wsUrl ?? this.wsUrl,
       token: token ?? this.token,
+      deviceId: deviceId ?? this.deviceId,
+      tlsCertSha256: tlsCertSha256 ?? this.tlsCertSha256,
+      authMode: authMode ?? this.authMode,
     );
   }
 
@@ -122,6 +162,9 @@ class HostProfile {
         'name': name,
         'ws_url': wsUrl,
         'token': token,
+        if (deviceId.isNotEmpty) 'device_id': deviceId,
+        if (tlsCertSha256.isNotEmpty) 'tls_cert_sha256': tlsCertSha256,
+        if (authMode.isNotEmpty) 'auth_mode': authMode,
       };
 
   factory HostProfile.fromJson(Map<String, dynamic> json) => HostProfile(
@@ -130,6 +173,9 @@ class HostProfile {
         name: (json['name'] as String?) ?? '主机',
         wsUrl: normalizeWsUrl((json['ws_url'] as String?) ?? ''),
         token: (json['token'] as String?) ?? '',
+        deviceId: (json['device_id'] as String?) ?? '',
+        tlsCertSha256: (json['tls_cert_sha256'] as String?) ?? '',
+        authMode: (json['auth_mode'] as String?) ?? '',
       );
 }
 
@@ -341,6 +387,7 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
               ? 'mini'
               : state.overlayMode);
 
+      _syncPinnedCerts(profiles);
       state = state.copyWith(
         wsUrl: activeProfile.wsUrl,
         token: activeProfile.token,
@@ -463,7 +510,21 @@ class SettingsNotifier extends StateNotifier<AppSettings> {
     await _persist(next);
   }
 
+  void _syncPinnedCerts(List<HostProfile> profiles) {
+    PinnedCertStore.instance.clearAll();
+    for (final p in profiles) {
+      if (p.tlsCertSha256.trim().isEmpty) continue;
+      final uri = Uri.tryParse(p.wsUrl.trim());
+      if (uri == null || uri.host.isEmpty) continue;
+      final port = uri.hasPort
+          ? uri.port
+          : (uri.scheme == 'wss' ? 443 : 8765);
+      PinnedCertStore.instance.setPin(uri.host, port, p.tlsCertSha256);
+    }
+  }
+
   Future<void> _persist(AppSettings s) async {
+    _syncPinnedCerts(s.hostProfiles);
     final prefs = await SharedPreferences.getInstance();
     final profilesJson =
         jsonEncode(s.hostProfiles.map((p) => p.toJson()).toList());

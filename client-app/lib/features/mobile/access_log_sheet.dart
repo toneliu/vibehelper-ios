@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/pinned_http_client.dart';
 import '../../core/theme.dart';
 
 String? httpBaseFromWsUrl(String rawWsUrl) {
@@ -85,11 +86,13 @@ class AccessLogPage extends StatefulWidget {
     required this.hostHttpBase,
     required this.hostToken,
     required this.hostName,
+    this.tlsCertSha256 = '',
   });
 
   final String hostHttpBase;
   final String hostToken;
   final String hostName;
+  final String tlsCertSha256;
 
   @override
   State<AccessLogPage> createState() => _AccessLogPageState();
@@ -115,7 +118,10 @@ class _AccessLogPageState extends State<AccessLogPage> {
       _loading = true;
       _error = null;
     });
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    final client = createPinnedHttpClient(
+      pinnedCertSha256: widget.tlsCertSha256,
+      connectionTimeout: const Duration(seconds: 6),
+    );
     try {
       final token = widget.hostToken.trim();
       final qp = <String, String>{
@@ -124,11 +130,11 @@ class _AccessLogPageState extends State<AccessLogPage> {
         if (_filter == _LogFilter.actions) 'only_actions': 'true',
         if (_filter == _LogFilter.terminal) 'only_terminal': 'true',
         if (_filter == _LogFilter.errors) 'only_errors': 'true',
-        if (token.isNotEmpty) 'token': token,
       };
       final uri = Uri.parse('${widget.hostHttpBase}/api/host/access-logs')
           .replace(queryParameters: qp);
       final req = await client.getUrl(uri);
+      applyAuthHeaders(req, token);
       final resp = await req.close().timeout(const Duration(seconds: 8));
       final body = await utf8.decoder.bind(resp).join();
       if (resp.statusCode != 200) {
@@ -190,14 +196,15 @@ class _AccessLogPageState extends State<AccessLogPage> {
     );
     if (confirmed != true || !mounted) return;
 
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+    final client = createPinnedHttpClient(
+      pinnedCertSha256: widget.tlsCertSha256,
+      connectionTimeout: const Duration(seconds: 6),
+    );
     try {
       final token = widget.hostToken.trim();
-      final uri = Uri.parse('${widget.hostHttpBase}/api/host/access-logs')
-          .replace(queryParameters: {
-        if (token.isNotEmpty) 'token': token,
-      });
+      final uri = Uri.parse('${widget.hostHttpBase}/api/host/access-logs');
       final req = await client.deleteUrl(uri);
+      applyAuthHeaders(req, token);
       final resp = await req.close().timeout(const Duration(seconds: 8));
       await resp.drain<void>();
       if (resp.statusCode != 200) {

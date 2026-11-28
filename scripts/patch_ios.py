@@ -68,6 +68,12 @@ if info_plist.exists():
     plist_data["NSSupportsLiveActivitiesFrequentUpdates"] = True
     plist_data["UIFileSharingEnabled"] = True
     plist_data["LSSupportsOpeningDocumentsInPlace"] = True
+    plist_data["UISupportedInterfaceOrientations"] = [
+        "UIInterfaceOrientationPortrait",
+    ]
+    plist_data["UISupportedInterfaceOrientations~ipad"] = [
+        "UIInterfaceOrientationPortrait",
+    ]
     bg_modes = plist_data.get("UIBackgroundModes")
     if not isinstance(bg_modes, list):
         bg_modes = []

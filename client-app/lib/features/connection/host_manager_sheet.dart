@@ -8,6 +8,7 @@ import '../../core/theme.dart';
 import '../../core/vibe_socket_client.dart';
 import '../reader/window_content_controller.dart';
 import 'connection_controller.dart';
+import 'host_pair_dialog.dart';
 
 /// Multi-Host Manager bottom sheet / dialog: allows adding, editing, deleting,
 /// and 1-tap switching between multiple Windows/Linux Hosts.
@@ -56,81 +57,11 @@ class _HostManagerSheetState extends ConsumerState<HostManagerSheet> {
   }
 
   Future<void> _showEditHostDialog({HostProfile? existing}) async {
-    final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    final urlCtrl = TextEditingController(
-      text: existing?.wsUrl ?? '192.168.1.',
+    final saved = await showHostEditOrPairDialog(
+      context,
+      ref,
+      existing: existing,
     );
-    final tokenCtrl = TextEditingController(text: existing?.token ?? '');
-
-    final saved = await showDialog<HostProfile>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(existing == null ? '添加被控端 (Host)' : '编辑被控端'),
-        content: SizedBox(
-          width: 380,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameCtrl,
-                decoration: const InputDecoration(
-                  labelText: '主机名称',
-                  hintText: '例如：家里 Win11 / Linux 服务器',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: urlCtrl,
-                decoration: const InputDecoration(
-                  labelText: '地址 (支持直接填 IP 或 IP:端口)',
-                  hintText: '192.168.110.125:8765 或 ws://...',
-                ),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: tokenCtrl,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '鉴权 Token (可选)',
-                  hintText: '未设置可留空',
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final rawUrl = urlCtrl.text.trim();
-              if (rawUrl.isEmpty) return;
-              final normalized = normalizeWsUrl(rawUrl);
-              final label = nameCtrl.text.trim().isEmpty
-                  ? inferHostLabel(normalized)
-                  : nameCtrl.text.trim();
-              Navigator.of(ctx).pop(
-                HostProfile(
-                  id: existing?.id ??
-                      'host-${DateTime.now().millisecondsSinceEpoch}',
-                  name: label,
-                  wsUrl: normalized,
-                  token: tokenCtrl.text.trim(),
-                ),
-              );
-            },
-            child: const Text('保存并连接'),
-          ),
-        ],
-      ),
-    );
-
-    nameCtrl.dispose();
-    urlCtrl.dispose();
-    tokenCtrl.dispose();
-
     if (saved != null && mounted) {
       await ref
           .read(settingsProvider.notifier)
