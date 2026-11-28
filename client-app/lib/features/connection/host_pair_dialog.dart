@@ -59,6 +59,63 @@ Future<HostProfile?> showHostEditOrPairDialog(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
+                  if (errorMsg != null) ...[
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: p.danger.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: p.danger.withValues(alpha: 0.45)),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(Icons.error_outline_rounded,
+                              size: 16, color: p.danger),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              errorMsg!,
+                              style: TextStyle(fontSize: 12, color: p.danger),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (pairing) ...[
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: p.accent.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                            color: p.accent.withValues(alpha: 0.35)),
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: p.accent),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '正在连接宿主机并完成配对...',
+                              style: TextStyle(fontSize: 12, color: p.accent),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   TextField(
                     controller: nameCtrl,
                     decoration: const InputDecoration(
@@ -247,13 +304,6 @@ Future<HostProfile?> showHostEditOrPairDialog(
                       ),
                     ],
                   ],
-                  if (errorMsg != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      errorMsg!,
-                      style: TextStyle(fontSize: 12, color: p.danger),
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -267,9 +317,13 @@ Future<HostProfile?> showHostEditOrPairDialog(
               onPressed: pairing
                   ? null
                   : () async {
+                      FocusManager.instance.primaryFocus?.unfocus();
                       final normalizedUrl =
                           buildNormalizedUrl(urlCtrl.text, useTls);
-                      if (normalizedUrl.isEmpty) return;
+                      if (normalizedUrl.isEmpty) {
+                        setDlg(() => errorMsg = '请输入有效的主机地址');
+                        return;
+                      }
                       final hostLabel = nameCtrl.text.trim().isEmpty
                           ? inferHostLabel(normalizedUrl)
                           : nameCtrl.text.trim();
@@ -307,40 +361,50 @@ Future<HostProfile?> showHostEditOrPairDialog(
                         pairing = true;
                         errorMsg = null;
                       });
-                      final deviceName = ref.read(settingsProvider).clientName;
-                      final pairRes =
-                          await ref.read(hostActionProvider).pairHost(
-                                wsUrl: normalizedUrl,
-                                code: authMethod == 'pair_code' ? secret : '',
-                                password: authMethod == 'master_password'
-                                    ? secretCtrl.text
-                                    : '',
-                                deviceName: deviceName,
-                                expectedCertSha256: pinnedSha,
-                              );
-                      if (!ctx.mounted) return;
-                      if (!pairRes.ok) {
+                      try {
+                        final deviceName = ref.read(settingsProvider).clientName;
+                        final pairRes =
+                            await ref.read(hostActionProvider).pairHost(
+                                  wsUrl: normalizedUrl,
+                                  code: authMethod == 'pair_code' ? secret : '',
+                                  password: authMethod == 'master_password'
+                                      ? secretCtrl.text
+                                      : '',
+                                  deviceName: deviceName,
+                                  expectedCertSha256: pinnedSha,
+                                );
+                        if (!ctx.mounted) return;
+                        if (!pairRes.ok) {
+                          setDlg(() {
+                            pairing = false;
+                            errorMsg = pairRes.message.isNotEmpty
+                                ? pairRes.message
+                                : '配对未通过，请检查地址与密码';
+                          });
+                          return;
+                        }
+                        Navigator.of(ctx).pop(
+                          HostProfile(
+                            id: existing?.id ??
+                                'host-${DateTime.now().millisecondsSinceEpoch}',
+                            name: nameCtrl.text.trim().isEmpty &&
+                                    pairRes.hostName.isNotEmpty
+                                ? pairRes.hostName
+                                : hostLabel,
+                            wsUrl: normalizedUrl,
+                            token: pairRes.deviceToken,
+                            deviceId: pairRes.deviceId,
+                            tlsCertSha256: pairRes.tlsCertSha256,
+                            authMode: 'paired',
+                          ),
+                        );
+                      } catch (e) {
+                        if (!ctx.mounted) return;
                         setDlg(() {
                           pairing = false;
-                          errorMsg = pairRes.message;
+                          errorMsg = '配对异常: $e';
                         });
-                        return;
                       }
-                      Navigator.of(ctx).pop(
-                        HostProfile(
-                          id: existing?.id ??
-                              'host-${DateTime.now().millisecondsSinceEpoch}',
-                          name: nameCtrl.text.trim().isEmpty &&
-                                  pairRes.hostName.isNotEmpty
-                              ? pairRes.hostName
-                              : hostLabel,
-                          wsUrl: normalizedUrl,
-                          token: pairRes.deviceToken,
-                          deviceId: pairRes.deviceId,
-                          tlsCertSha256: pairRes.tlsCertSha256,
-                          authMode: 'paired',
-                        ),
-                      );
                     },
               child: pairing
                   ? const SizedBox(
