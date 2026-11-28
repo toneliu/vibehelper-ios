@@ -215,6 +215,11 @@ class HostIdeApp {
     this.cdpPages = 0,
     this.supportsCdp = true,
     this.appKind = 'cdp',
+    this.supportsAccounts = false,
+    this.activeAccountId = '',
+    this.activeAccountLabel = '',
+    this.currentUsername = '',
+    this.accountCount = 0,
   });
 
   final String id;
@@ -227,6 +232,11 @@ class HostIdeApp {
   final int cdpPages;
   final bool supportsCdp;
   final String appKind;
+  final bool supportsAccounts;
+  final String activeAccountId;
+  final String activeAccountLabel;
+  final String currentUsername;
+  final int accountCount;
 
   bool get isCli => !supportsCdp || appKind == 'cli';
 
@@ -241,7 +251,90 @@ class HostIdeApp {
         cdpPages: (json['cdp_pages'] as num?)?.toInt() ?? 0,
         supportsCdp: (json['supports_cdp'] as bool?) ?? true,
         appKind: (json['app_kind'] as String?) ?? 'cdp',
+        supportsAccounts: (json['supports_accounts'] as bool?) ?? false,
+        activeAccountId: (json['active_account_id'] as String?) ?? '',
+        activeAccountLabel: (json['active_account_label'] as String?) ?? '',
+        currentUsername: (json['current_username'] as String?) ?? '',
+        accountCount: (json['account_count'] as num?)?.toInt() ?? 0,
       );
+}
+
+class IdeAccountItem {
+  const IdeAccountItem({
+    required this.id,
+    required this.ideId,
+    required this.label,
+    this.detectedUsername = '',
+    this.hasKeyringSecret = false,
+    this.snapshotFiles = 0,
+    this.isActive = false,
+    this.createdAt = '',
+    this.updatedAt = '',
+    this.lastUsedAt = '',
+  });
+
+  final String id;
+  final String ideId;
+  final String label;
+  final String detectedUsername;
+  final bool hasKeyringSecret;
+  final int snapshotFiles;
+  final bool isActive;
+  final String createdAt;
+  final String updatedAt;
+  final String lastUsedAt;
+
+  factory IdeAccountItem.fromJson(Map<String, dynamic> json) => IdeAccountItem(
+        id: (json['id'] as String?) ?? '',
+        ideId: (json['ide_id'] as String?) ?? 'antigravity',
+        label: (json['label'] as String?) ?? '',
+        detectedUsername: (json['detected_username'] as String?) ?? '',
+        hasKeyringSecret: (json['has_keyring_secret'] as bool?) ?? false,
+        snapshotFiles: (json['snapshot_files'] as num?)?.toInt() ?? 0,
+        isActive: (json['is_active'] as bool?) ?? false,
+        createdAt: (json['created_at'] as String?) ?? '',
+        updatedAt: (json['updated_at'] as String?) ?? '',
+        lastUsedAt: (json['last_used_at'] as String?) ?? '',
+      );
+}
+
+class IdeAccountsSnapshot {
+  const IdeAccountsSnapshot({
+    required this.ideId,
+    this.supported = true,
+    this.keyringSupported = false,
+    this.hasActiveCredential = false,
+    this.currentUsername = '',
+    this.activeAccountId = '',
+    this.activeAccountLabel = '',
+    this.accounts = const [],
+  });
+
+  final String ideId;
+  final bool supported;
+  final bool keyringSupported;
+  final bool hasActiveCredential;
+  final String currentUsername;
+  final String activeAccountId;
+  final String activeAccountLabel;
+  final List<IdeAccountItem> accounts;
+
+  factory IdeAccountsSnapshot.fromJson(Map<String, dynamic> json) {
+    final rawList = (json['accounts'] as List<dynamic>?) ?? const [];
+    return IdeAccountsSnapshot(
+      ideId: (json['ide_id'] as String?) ?? 'antigravity',
+      supported: (json['supported'] as bool?) ?? false,
+      keyringSupported: (json['keyring_supported'] as bool?) ?? false,
+      hasActiveCredential: (json['has_active_credential'] as bool?) ?? false,
+      currentUsername: (json['current_username'] as String?) ?? '',
+      activeAccountId: (json['active_account_id'] as String?) ?? '',
+      activeAccountLabel: (json['active_account_label'] as String?) ?? '',
+      accounts: rawList
+          .whereType<Map<String, dynamic>>()
+          .map(IdeAccountItem.fromJson)
+          .toList(),
+    );
+  }
 }
 
 class InjectionRecord {
@@ -1143,6 +1236,142 @@ class HostActionController {
     } finally {
       httpClient.close(force: true);
     }
+  }
+
+  Future<(bool ok, String message, Map<String, dynamic>? data)> _accountHttpJson(
+    String method,
+    String path, {
+    Map<String, String>? extraQuery,
+    Map<String, dynamic>? body,
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    final settings = _ref.read(settingsProvider);
+    final query = <String, String>{
+      if (extraQuery != null) ...extraQuery,
+      if (settings.token.trim().isNotEmpty) 'token': settings.token.trim(),
+    };
+    final uri = _buildHostHttpUri(settings.wsUrl, path, query);
+    if (uri == null) return (false, 'Host 地址无效', null);
+    final httpClient = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5);
+    try {
+      final HttpClientRequest req;
+      switch (method) {
+        case 'GET':
+          req = await httpClient.getUrl(uri);
+        case 'POST':
+          req = await httpClient.postUrl(uri);
+        case 'PATCH':
+          req = await httpClient.patchUrl(uri);
+        case 'DELETE':
+          req = await httpClient.deleteUrl(uri);
+        default:
+          req = await httpClient.openUrl(method, uri);
+      }
+      if (body != null) {
+        req.headers.contentType = ContentType.json;
+        req.write(jsonEncode(body));
+      }
+      final resp = await req.close().timeout(timeout);
+      final raw = await resp.transform(utf8.decoder).join();
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) {
+        final ok = resp.statusCode >= 200 &&
+            resp.statusCode < 300 &&
+            decoded['ok'] == true;
+        final msg = (decoded['message'] as String?) ?? (ok ? '操作完成' : '请求失败');
+        return (ok, msg, decoded);
+      }
+      return (false, '返回格式异常', null);
+    } catch (e) {
+      return (false, '账号请求失败: $e', null);
+    } finally {
+      httpClient.close(force: true);
+    }
+  }
+
+  Future<IdeAccountsSnapshot?> fetchIdeAccounts({
+    String ideId = 'antigravity',
+  }) async {
+    final (ok, _, decoded) = await _accountHttpJson(
+      'GET',
+      '/api/host/accounts',
+      extraQuery: {'ide_id': ideId},
+    );
+    if (!ok || decoded == null) return null;
+    return IdeAccountsSnapshot.fromJson(decoded);
+  }
+
+  Future<(bool ok, String message)> saveIdeAccount({
+    String ideId = 'antigravity',
+    String label = '',
+    String? accountId,
+  }) async {
+    final (ok, msg, _) = await _accountHttpJson(
+      'POST',
+      '/api/host/accounts/save',
+      body: {
+        'ide_id': ideId,
+        'label': label,
+        if (accountId != null && accountId.isNotEmpty) 'account_id': accountId,
+      },
+    );
+    return (ok, msg);
+  }
+
+  Future<(bool ok, String message)> switchIdeAccount({
+    String ideId = 'antigravity',
+    required String accountId,
+  }) async {
+    final (ok, msg, _) = await _accountHttpJson(
+      'POST',
+      '/api/host/accounts/switch',
+      body: {
+        'ide_id': ideId,
+        'account_id': accountId,
+      },
+      timeout: const Duration(seconds: 25),
+    );
+    return (ok, msg);
+  }
+
+  Future<(bool ok, String message)> prepareIdeAccountLogin({
+    String ideId = 'antigravity',
+  }) async {
+    final (ok, msg, _) = await _accountHttpJson(
+      'POST',
+      '/api/host/accounts/prepare-login',
+      body: {'ide_id': ideId},
+      timeout: const Duration(seconds: 25),
+    );
+    return (ok, msg);
+  }
+
+  Future<(bool ok, String message)> renameIdeAccount({
+    String ideId = 'antigravity',
+    required String accountId,
+    required String label,
+  }) async {
+    final safeId = Uri.encodeComponent(accountId);
+    final (ok, msg, _) = await _accountHttpJson(
+      'PATCH',
+      '/api/host/accounts/$safeId',
+      body: {'ide_id': ideId, 'label': label},
+    );
+    return (ok, msg);
+  }
+
+  Future<(bool ok, String message)> deleteIdeAccount({
+    String ideId = 'antigravity',
+    required String accountId,
+  }) async {
+    final safeId = Uri.encodeComponent(accountId);
+    final (ok, msg, _) = await _accountHttpJson(
+      'DELETE',
+      '/api/host/accounts/$safeId',
+      extraQuery: {'ide_id': ideId},
+    );
+    return (ok, msg);
   }
 }
 

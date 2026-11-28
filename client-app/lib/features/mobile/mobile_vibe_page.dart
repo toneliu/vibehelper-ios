@@ -24,6 +24,7 @@ import '../update/update_controller.dart';
 import '../windows/window_controller.dart';
 import '../windows/window_selector_panel.dart';
 import 'access_log_sheet.dart';
+import 'ide_account_sheet.dart';
 import 'project_sheets.dart';
 
 /// LingGuang-inspired minimalist 5-tab Android Vibe Coding console.
@@ -1294,6 +1295,30 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
     setState(() => _busyIdeId = null);
+  }
+
+  Future<void> _openIdeAccountSheet({
+    required String ideId,
+    required String ideName,
+  }) {
+    return showIdeAccountSheet(
+      context,
+      ref,
+      ideId: ideId,
+      ideName: ideName,
+      onAccountsChanged: () => unawaited(_loadHostApps()),
+      onSwitchedAccount: () {
+        unawaited(_loadHostApps());
+        Future<void>.delayed(const Duration(milliseconds: 900), () async {
+          if (!mounted) return;
+          await ref.read(windowControllerProvider.notifier).refresh();
+          unawaited(
+              ref.read(windowContentProvider.notifier).fetchContent());
+          unawaited(_probeAllHosts());
+        });
+      },
+      onOpenRemoteScreen: () => _switchToTab(1),
+    );
   }
 
   void _openWindowPickerSheet() {
@@ -3029,6 +3054,13 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
     }
 
     final now = DateTime.now();
+    final selectedWin = winState.selectedWindow;
+    final accountApp = _ideApps.where((a) {
+      if (!a.supportsAccounts || !a.installed) return false;
+      if (selectedWin == null) return true;
+      final hay = '${selectedWin.app} ${selectedWin.title}'.toLowerCase();
+      return hay.contains(a.id);
+    }).firstOrNull;
     final serverQueue = content?.queuedMessages ?? const <String>[];
     final effectiveQueue = <String>[
       ...serverQueue,
@@ -3209,6 +3241,51 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                     ),
                   ),
                 ),
+                if (connected && accountApp != null) ...[
+                  const SizedBox(width: 4),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: () => unawaited(_openIdeAccountSheet(
+                      ideId: accountApp.id,
+                      ideName: accountApp.name,
+                    )),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 7, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: p.panel.withValues(alpha: p.isDark ? 0.9 : 0.78),
+                        borderRadius: BorderRadius.circular(999),
+                        border:
+                            Border.all(color: p.border.withValues(alpha: 0.75)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.manage_accounts_rounded,
+                              size: 12, color: p.accent),
+                          const SizedBox(width: 3),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 56),
+                            child: Text(
+                              accountApp.activeAccountLabel.isNotEmpty
+                                  ? accountApp.activeAccountLabel
+                                  : (accountApp.currentUsername.isNotEmpty
+                                      ? accountApp.currentUsername
+                                      : '切号'),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w600,
+                                color: p.text,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(width: 5),
                 InkWell(
                   borderRadius: BorderRadius.circular(999),
@@ -5441,6 +5518,19 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
                         _miniTag(p, 'CDP :${app.cdpPort}', p.success)
                       else if (app.running)
                         _miniTag(p, '需重启开CDP', p.warning),
+                      if (app.supportsAccounts)
+                        _miniTag(
+                          p,
+                          app.activeAccountLabel.isNotEmpty
+                              ? '👤 ${app.activeAccountLabel}'
+                              : (app.currentUsername.isNotEmpty
+                                  ? '👤 ${app.currentUsername}'
+                                  : '未保存账号'),
+                          (app.activeAccountLabel.isNotEmpty ||
+                                  app.currentUsername.isNotEmpty)
+                              ? p.accent
+                              : p.muted,
+                        ),
                     ],
                   ],
                 ),
@@ -5457,44 +5547,75 @@ class _MobileVibePageState extends ConsumerState<MobileVibePage>
             ),
           ),
           const SizedBox(width: 6),
-          if (app.installed) ...[
-            if (!app.running)
-              OutlinedButton(
-                onPressed: isBusy ? null : () => _launchIde(app, restart: false),
-                style: OutlinedButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                ),
-                child: Text(isCli ? '启动终端' : '启动 CDP', style: const TextStyle(fontSize: 11.5)),
-              )
-            else ...[
-              if (!isCli && !app.cdpActive) ...[
-                OutlinedButton(
-                  onPressed:
-                      isBusy ? null : () => _launchIde(app, restart: true),
-                  style: OutlinedButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  ),
-                  child: const Text('重启 CDP', style: TextStyle(fontSize: 11)),
-                ),
-                const SizedBox(width: 4),
-              ],
-              FilledButton.tonal(
-                onPressed: isBusy ? null : () => _focusIde(app),
-                style: FilledButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  backgroundColor: p.accent.withValues(alpha: 0.14),
-                  foregroundColor: p.accent,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                ),
-                child: const Text('切换', style: TextStyle(fontSize: 11.5)),
+          if (app.installed)
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 168),
+              child: Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                alignment: WrapAlignment.end,
+                children: [
+                  if (app.supportsAccounts)
+                    OutlinedButton(
+                      onPressed: isBusy
+                          ? null
+                          : () => unawaited(_openIdeAccountSheet(
+                                ideId: app.id,
+                                ideName: app.name,
+                              )),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                      ),
+                      child: Text(
+                        app.accountCount > 0
+                            ? '切号(${app.accountCount})'
+                            : '账号',
+                        style: const TextStyle(fontSize: 11),
+                      ),
+                    ),
+                  if (!app.running)
+                    OutlinedButton(
+                      onPressed:
+                          isBusy ? null : () => _launchIde(app, restart: false),
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                      ),
+                      child: Text(isCli ? '启动终端' : '启动 CDP',
+                          style: const TextStyle(fontSize: 11.5)),
+                    )
+                  else ...[
+                    if (!isCli && !app.cdpActive)
+                      OutlinedButton(
+                        onPressed: isBusy
+                            ? null
+                            : () => _launchIde(app, restart: true),
+                        style: OutlinedButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                        ),
+                        child: const Text('重启 CDP',
+                            style: TextStyle(fontSize: 11)),
+                      ),
+                    FilledButton.tonal(
+                      onPressed: isBusy ? null : () => _focusIde(app),
+                      style: FilledButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        backgroundColor: p.accent.withValues(alpha: 0.14),
+                        foregroundColor: p.accent,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                      ),
+                      child: const Text('切换', style: TextStyle(fontSize: 11.5)),
+                    ),
+                  ],
+                ],
               ),
-            ],
-          ],
+            ),
         ],
       ),
     );
