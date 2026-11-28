@@ -428,17 +428,26 @@ class _IdeAccountSheetBodyState extends State<_IdeAccountSheetBody> {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 7, vertical: 2),
                         decoration: BoxDecoration(
-                          color: (snap.keyringSupported ? p.success : p.accent)
+                          color: ((snap.keyringSupported || snap.hasTokenFile)
+                                  ? p.success
+                                  : p.accent)
                               .withValues(alpha: 0.13),
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
-                          snap.keyringSupported ? '密钥环就绪' : '轻量配置快照',
+                          (snap.hasTokenFile && snap.keyringSupported)
+                              ? '密钥环/文件凭据'
+                              : (snap.hasTokenFile
+                                  ? '文件凭据就绪'
+                                  : (snap.keyringSupported
+                                      ? '密钥环就绪'
+                                      : '轻量配置快照')),
                           style: TextStyle(
                             fontSize: 10,
                             fontWeight: FontWeight.w700,
-                            color:
-                                snap.keyringSupported ? p.success : p.accent,
+                            color: (snap.keyringSupported || snap.hasTokenFile)
+                                ? p.success
+                                : p.accent,
                           ),
                         ),
                       ),
@@ -643,10 +652,15 @@ class _IdeAccountSheetBodyState extends State<_IdeAccountSheetBody> {
                                         if (acc.detectedUsername.isNotEmpty &&
                                             acc.detectedUsername != acc.label)
                                           acc.detectedUsername,
-                                        if (acc.hasKeyringSecret)
+                                        if (acc.hasKeyringSecret &&
+                                            acc.hasTokenFile)
+                                          '含密钥环+文件凭据'
+                                        else if (acc.hasKeyringSecret)
                                           '含密钥环凭据'
+                                        else if (acc.hasTokenFile)
+                                          '含文件凭据'
                                         else if (snap?.keyringSupported ?? false)
-                                          '⚠ 缺少密钥环凭据(需重存)',
+                                          '⚠ 缺少持久凭据(需重存)',
                                         '${acc.snapshotFiles} 项状态',
                                       ].join(' · '),
                                       maxLines: 1,
@@ -655,7 +669,7 @@ class _IdeAccountSheetBodyState extends State<_IdeAccountSheetBody> {
                                         fontSize: 11,
                                         color: ((snap?.keyringSupported ??
                                                     false) &&
-                                                !acc.hasKeyringSecret)
+                                                !acc.hasPersistentCredential)
                                             ? p.warning
                                             : p.muted,
                                       ),

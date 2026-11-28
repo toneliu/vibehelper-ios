@@ -266,6 +266,7 @@ class IdeAccountItem {
     required this.label,
     this.detectedUsername = '',
     this.hasKeyringSecret = false,
+    this.hasTokenFile = false,
     this.snapshotFiles = 0,
     this.isActive = false,
     this.createdAt = '',
@@ -278,11 +279,14 @@ class IdeAccountItem {
   final String label;
   final String detectedUsername;
   final bool hasKeyringSecret;
+  final bool hasTokenFile;
   final int snapshotFiles;
   final bool isActive;
   final String createdAt;
   final String updatedAt;
   final String lastUsedAt;
+
+  bool get hasPersistentCredential => hasKeyringSecret || hasTokenFile;
 
   factory IdeAccountItem.fromJson(Map<String, dynamic> json) => IdeAccountItem(
         id: (json['id'] as String?) ?? '',
@@ -290,6 +294,7 @@ class IdeAccountItem {
         label: (json['label'] as String?) ?? '',
         detectedUsername: (json['detected_username'] as String?) ?? '',
         hasKeyringSecret: (json['has_keyring_secret'] as bool?) ?? false,
+        hasTokenFile: (json['has_token_file'] as bool?) ?? false,
         snapshotFiles: (json['snapshot_files'] as num?)?.toInt() ?? 0,
         isActive: (json['is_active'] as bool?) ?? false,
         createdAt: (json['created_at'] as String?) ?? '',
@@ -303,6 +308,7 @@ class IdeAccountsSnapshot {
     required this.ideId,
     this.supported = true,
     this.keyringSupported = false,
+    this.hasTokenFile = false,
     this.hasActiveCredential = false,
     this.currentUsername = '',
     this.activeAccountId = '',
@@ -313,6 +319,7 @@ class IdeAccountsSnapshot {
   final String ideId;
   final bool supported;
   final bool keyringSupported;
+  final bool hasTokenFile;
   final bool hasActiveCredential;
   final String currentUsername;
   final String activeAccountId;
@@ -325,6 +332,7 @@ class IdeAccountsSnapshot {
       ideId: (json['ide_id'] as String?) ?? 'antigravity',
       supported: (json['supported'] as bool?) ?? false,
       keyringSupported: (json['keyring_supported'] as bool?) ?? false,
+      hasTokenFile: (json['has_token_file'] as bool?) ?? false,
       hasActiveCredential: (json['has_active_credential'] as bool?) ?? false,
       currentUsername: (json['current_username'] as String?) ?? '',
       activeAccountId: (json['active_account_id'] as String?) ?? '',
