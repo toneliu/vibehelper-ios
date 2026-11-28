@@ -97,8 +97,18 @@ def _git_short_sha(repo_root: pathlib.Path) -> str:
     return "local"
 
 
-def compute_metadata(repo_root: pathlib.Path, *, build_id: str | None = None) -> dict[str, Any]:
+def compute_metadata(
+    repo_root: pathlib.Path,
+    *,
+    build_id: str | None = None,
+    version_override: str | None = None,
+    build_number_override: int | None = None,
+) -> dict[str, Any]:
     app_ver, build_num = read_pubspec_version(repo_root)
+    if version_override and version_override.strip():
+        app_ver = version_override.strip()
+    if build_number_override is not None and int(build_number_override) > 0:
+        build_num = int(build_number_override)
     return {
         "version": app_ver,
         "build_number": build_num,
@@ -185,6 +195,8 @@ def main() -> int:
         default=pathlib.Path(__file__).resolve().parent.parent,
     )
     parser.add_argument("--build-id", default="", help="Override git short SHA build ID")
+    parser.add_argument("--version", default="", help="Override semantic version string (e.g. 0.7.18)")
+    parser.add_argument("--build-number", type=int, default=0, help="Override integer build number (e.g. 18)")
     parser.add_argument("--print-dart-defines", action="store_true")
     parser.add_argument("--print-json", action="store_true")
     parser.add_argument("--publish-dir", type=pathlib.Path, default=None)
@@ -199,7 +211,12 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
-    meta = compute_metadata(repo_root, build_id=args.build_id or None)
+    meta = compute_metadata(
+        repo_root,
+        build_id=args.build_id or None,
+        version_override=args.version or None,
+        build_number_override=args.build_number if args.build_number > 0 else None,
+    )
 
     if args.print_dart_defines:
         flags = [

@@ -40,7 +40,21 @@ jobs:
         run: |
           set -euo pipefail
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          DART_DEFINES="$(python3 scripts/compute_update_manifest.py --print-dart-defines --build-id "$SHORT_SHA")"
+          BASE_INFO="$(python3 -c '
+import pathlib, re
+txt = pathlib.Path("client-app/pubspec.yaml").read_text(encoding="utf-8")
+m = re.search(r"^version:\s*([0-9]+)\.([0-9]+)\.[0-9]+\+([0-9]+)", txt, re.M)
+print(f"{m.group(1)}.{m.group(2)} {m.group(3)}" if m else "0.7 7")
+')"
+          MAJOR_MINOR="${BASE_INFO%% *}"
+          PUBSPEC_BUILD="${BASE_INFO##* }"
+          RUN_NUM="${GITHUB_RUN_NUMBER:-7}"
+          CI_BUILD_NUM=$(( RUN_NUM > PUBSPEC_BUILD ? RUN_NUM : PUBSPEC_BUILD ))
+          CI_APP_VER="${MAJOR_MINOR}.${CI_BUILD_NUM}"
+          export VH_MARKETING_VERSION="$CI_APP_VER"
+          export VH_BUILD_NUMBER="$CI_BUILD_NUM"
+          echo "Using iOS CI version=${CI_APP_VER}+${CI_BUILD_NUM}"
+          DART_DEFINES="$(python3 scripts/compute_update_manifest.py --print-dart-defines --build-id "$SHORT_SHA" --version "$CI_APP_VER" --build-number "$CI_BUILD_NUM")"
           echo "Using dart defines: $DART_DEFINES"
 
           cd client-app
@@ -56,7 +70,7 @@ jobs:
 
           flutter analyze --no-fatal-infos
           flutter test
-          flutter build ios --release --no-codesign $DART_DEFINES
+          flutter build ios --release --no-codesign --build-name "$CI_APP_VER" --build-number "$CI_BUILD_NUM" $DART_DEFINES
 
           APP_PATH="build/ios/iphoneos/Runner.app"
           WIDGET_PATH="$APP_PATH/PlugIns/VibeIslandWidget.appex"
@@ -73,6 +87,8 @@ jobs:
           cd ..
           python3 scripts/compute_update_manifest.py \
             --build-id "$SHORT_SHA" \
+            --version "$CI_APP_VER" \
+            --build-number "$CI_BUILD_NUM" \
             --publish-dir release \
             --ios-ipa release/vibehelper-client-ios.ipa \
             --altstore-out release/altstore-source.json \
