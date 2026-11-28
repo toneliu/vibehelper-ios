@@ -410,7 +410,10 @@ class _IdeAccountSheetBodyState extends State<_IdeAccountSheetBody> {
                             ? '正在检测当前登录状态...'
                             : (snap.hasActiveCredential
                                 ? '当前账号：${snap.activeAccountLabel.isNotEmpty ? snap.activeAccountLabel : (snap.currentUsername.isNotEmpty ? snap.currentUsername : "已登录")}'
-                                : '当前未检测到已登录账号'),
+                                : (snap.keyringSupported &&
+                                        snap.currentUsername.isNotEmpty
+                                    ? '密钥环无持久凭据（缓存: ${snap.currentUsername}）'
+                                    : '当前未检测到已登录账号')),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
@@ -640,13 +643,22 @@ class _IdeAccountSheetBodyState extends State<_IdeAccountSheetBody> {
                                         if (acc.detectedUsername.isNotEmpty &&
                                             acc.detectedUsername != acc.label)
                                           acc.detectedUsername,
-                                        if (acc.hasKeyringSecret) '含密钥环凭据',
+                                        if (acc.hasKeyringSecret)
+                                          '含密钥环凭据'
+                                        else if (snap?.keyringSupported ?? false)
+                                          '⚠ 缺少密钥环凭据(需重存)',
                                         '${acc.snapshotFiles} 项状态',
                                       ].join(' · '),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
-                                          fontSize: 11, color: p.muted),
+                                        fontSize: 11,
+                                        color: ((snap?.keyringSupported ??
+                                                    false) &&
+                                                !acc.hasKeyringSecret)
+                                            ? p.warning
+                                            : p.muted,
+                                      ),
                                     ),
                                   ],
                                 ),
