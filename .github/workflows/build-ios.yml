@@ -40,12 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           SHORT_SHA="${GITHUB_SHA:0:7}"
-          BASE_INFO="$(python3 -c '
-import pathlib, re
-txt = pathlib.Path("client-app/pubspec.yaml").read_text(encoding="utf-8")
-m = re.search(r"^version:\s*([0-9]+)\.([0-9]+)\.[0-9]+\+([0-9]+)", txt, re.M)
-print(f"{m.group(1)}.{m.group(2)} {m.group(3)}" if m else "0.7 7")
-')"
+          BASE_INFO="$(python3 -c 'import pathlib,re; m=re.search(r"^version:\s*([0-9]+)\.([0-9]+)\.[0-9]+\+([0-9]+)", pathlib.Path("client-app/pubspec.yaml").read_text(encoding="utf-8"), re.M); print(f"{m.group(1)}.{m.group(2)} {m.group(3)}" if m else "0.7 7")')"
           MAJOR_MINOR="${BASE_INFO%% *}"
           PUBSPEC_BUILD="${BASE_INFO##* }"
           RUN_NUM="${GITHUB_RUN_NUMBER:-7}"
